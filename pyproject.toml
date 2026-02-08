@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "isrc101-agent"
+version = "1.0.0"
+description = "isrc101-agent — AI coding assistant for your terminal."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+    "litellm>=1.40.0",
+    "rich>=13.0.0",
+    "click>=8.1.0",
+    "prompt_toolkit>=3.0.0",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+isrc = "isrc101_agent.main:cli"
+
+[tool.setuptools]
+packages = ["isrc101_agent", "isrc101_agent.tools"]

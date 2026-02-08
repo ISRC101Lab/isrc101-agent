@@ -1,0 +1,173 @@
+# isrc101-agent
+
+AI 编程助手，运行在你的终端中。受 Aider 和 Claude Code 启发，专为代码项目优化。
+
+## 快速开始
+
+```bash
+# 克隆项目
+git clone https://github.com/ISRC101Lab/isrc101-agent.git
+cd isrc101-agent
+
+# 一键安装
+bash setup.sh
+
+# 激活虚拟环境
+source .venv/bin/activate
+
+# 进入你的项目目录
+cd /path/to/your/project
+
+# 启动助手
+isrc run
+```
+
+`setup.sh` 脚本会自动处理所有依赖：创建虚拟环境、安装包、生成配置文件。
+
+## 核心特性
+
+### 🤖 智能模型支持
+- **DeepSeek 优先**: 深度集成 DeepSeek V3 Chat 和 R1 Reasoner
+- **本地模型**: 支持 vLLM / llama.cpp 等本地部署
+- **交互式选择**: `/model` 命令快速切换模型
+- **长响应支持**: 默认 8192 tokens，适合复杂代码任务
+
+### 💻 精准代码操作
+- **安全编辑**: `str_replace` 精确替换，避免意外修改
+- **智能浏览**: 自动调整目录深度，高效查看项目结构
+- **代码搜索**: 正则表达式搜索，快速定位代码
+- **Git 集成**: 自动提交修改，记录 AI 协作历史
+
+### 🎯 三种工作模式
+- **code 模式** (默认): 读写文件 + 执行命令，完整编程协助
+- **ask 模式**: 只读分析，安全查看和理解代码
+- **architect 模式**: 架构讨论和规划，不修改文件
+
+### ⚙️ 灵活配置
+- **项目级配置**: `.agent.conf.yml` 覆盖全局设置
+- **指令文件**: `AGENT.md` 定义项目特定规则
+- **环境变量**: API 密钥安全管理
+
+## 常用命令
+
+```
+# 模型管理
+/model              交互式选择模型 (↑↓ Enter)
+/model list         表格显示所有可用模型
+/model add ...      添加新模型预设
+/model rm <n>       删除模型预设
+
+# 模式切换
+/mode code          切换到代码编辑模式
+/mode ask           切换到只读分析模式
+/mode architect     切换到架构讨论模式
+
+# 系统命令
+/config             显示当前配置
+/git                查看 Git 状态和提交历史
+/stats              显示会话统计信息
+/reset              清空当前对话
+/help               显示帮助信息
+/quit               退出程序
+```
+
+## 配置说明
+
+### 默认模型配置
+项目预配置了以下模型模板：
+
+1. **deepseek-chat** (默认激活)
+   - 提供商: DeepSeek
+   - 模型: deepseek/deepseek-chat
+   - 描述: DeepSeek V3 Chat，通用对话模型
+   - 需要配置: 你的 DeepSeek API 密钥
+
+2. **deepseek-reasoner**
+   - 提供商: DeepSeek
+   - 模型: deepseek/deepseek-reasoner
+   - 描述: DeepSeek R1 Reasoner，推理专用模型
+   - 需要配置: 你的 DeepSeek API 密钥
+
+3. **local**
+   - 提供商: local
+   - 模型: openai/model
+   - 描述: 本地模型 (vLLM / llama.cpp)
+   - API: http://localhost:8080/v1 (默认本地地址)
+
+### 配置文件位置
+1. **项目级配置**: `./.agent.conf.yml` (优先使用)
+2. **全局配置**: `~/.isrc101-agent/config.yml` (备用)
+
+### 自定义配置
+编辑 `.agent.conf.yml` 文件可以：
+- 修改默认模型
+- 调整响应长度 (`max-tokens`)
+- 设置 API 密钥（使用环境变量更安全）
+- 启用/禁用自动提交
+- 配置命令超时时间
+
+### ⚠️ 安全提示
+1. **不要提交 API 密钥到版本控制**
+2. **使用环境变量管理敏感信息**
+3. **项目配置文件已使用占位符，请替换为你的实际密钥**
+4. **建议使用 `api-key-env` 配置项从环境变量读取密钥**
+
+### 环境变量配置示例
+```yaml
+deepseek-chat:
+  provider: deepseek
+  model: deepseek/deepseek-chat
+  description: DeepSeek V3 Chat
+  temperature: 0.0
+  max-tokens: 8192
+  api-base: https://api.deepseek.com
+  api-key-env: DEEPSEEK_API_KEY  # 从环境变量读取
+```
+
+然后在 shell 中设置环境变量：
+```bash
+export DEEPSEEK_API_KEY="your-actual-api-key-here"
+```
+
+## 最佳实践
+
+### 1. 项目初始化
+```bash
+# 在新项目中创建配置文件
+cp ~/.isrc101-agent/config.yml ./.agent.conf.yml
+
+# 编辑项目特定配置
+vim ./.agent.conf.yml
+```
+
+### 2. 使用 AGENT.md
+在项目根目录创建 `AGENT.md` 文件，定义：
+- 技术栈要求
+- 代码规范
+- 重要注意事项
+- 项目特定指令
+
+### 3. 工作流程
+1. **探索阶段**: 使用 `list_directory` 了解项目结构
+2. **分析阶段**: 使用 `read_file` 查看关键代码
+3. **修改阶段**: 使用 `str_replace` 精确编辑
+4. **验证阶段**: 运行测试或重新读取文件确认修改
+
+## 技术栈
+
+- **Python**: >= 3.10
+- **核心依赖**:
+  - `litellm`: 多模型接口统一
+  - `rich`: 终端美化输出
+  - `click`: 命令行界面
+  - `prompt_toolkit`: 交互式提示
+  - `gitpython`: Git 操作集成
+  - `python-dotenv`: 环境变量管理
+
+## 许可证
+
+MIT License - 详见 LICENSE 文件
+
+## 贡献
+
+欢迎提交 Issue 和 Pull Request！
