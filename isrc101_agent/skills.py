@@ -8,6 +8,9 @@ from typing import Dict, List, Optional, Tuple
 
 import yaml
 
+# Agent install directory — built-in skills live here
+_AGENT_HOME = Path(__file__).resolve().parent.parent
+
 
 @dataclass
 class SkillSpec:
@@ -87,9 +90,17 @@ def _normalize_dir(base_dir: Path, skills_dir: Optional[str]) -> Path:
 def _build_search_dirs(project_root: Path, skills_dir: Optional[str]) -> List[Path]:
     primary = _normalize_dir(project_root, skills_dir)
     search_dirs: List[Path] = [primary]
+    seen = {primary.resolve()}
 
+    # Built-in skills shipped with the agent
+    builtin_dir = _AGENT_HOME / (skills_dir or "skills")
+    if builtin_dir.resolve() not in seen:
+        search_dirs.append(builtin_dir)
+        seen.add(builtin_dir.resolve())
+
+    # Global user skills
     global_dir = Path.home() / ".isrc101-agent" / "skills"
-    if global_dir.resolve() != primary.resolve():
+    if global_dir.resolve() not in seen:
         search_dirs.append(global_dir)
 
     return search_dirs
