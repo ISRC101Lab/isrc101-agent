@@ -22,6 +22,8 @@ def check_config():
         print(f"  源文件: {config._config_source}")
         print(f"  项目目录: {config.project_root}")
         print(f"  当前模型: {config.active_model}")
+        print(f"  Web 开关: {'ON' if config.web_enabled else 'OFF'}")
+        print(f"  已启用技能: {', '.join(config.enabled_skills) if config.enabled_skills else '(none)'}")
         print()
         
         # 检查模型配置
@@ -45,17 +47,6 @@ def check_config():
                 print(f"      或设置环境变量: export DEEPSEEK_API_KEY='your-key'")
         
         print("\n" + "=" * 60)
-        
-        # 检查 AGENT.md
-        print("\n项目指令文件:")
-        print("-" * 60)
-        if config.project_instructions:
-            print("✓ AGENT.md 存在")
-            lines = config.project_instructions.splitlines()
-            print(f"  共 {len(lines)} 行")
-        else:
-            print("✗ AGENT.md 不存在")
-            print("  建议创建 AGENT.md 文件定义项目特定指令")
         
         print("\n" + "=" * 60 + "\n")
         

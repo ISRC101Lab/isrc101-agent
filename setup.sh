@@ -4,10 +4,49 @@
 #  Run: bash setup.sh
 # ══════════════════════════════════════════════════
 
-set -e
+set -Ee -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
+
+on_setup_error() {
+    local exit_code=$?
+    local line_no="$1"
+    local failed_cmd="${BASH_COMMAND:-unknown}"
+
+    echo ""
+    echo "  ❌ Setup failed (exit ${exit_code})"
+    echo "     Line: ${line_no}"
+    echo "     Command: ${failed_cmd}"
+
+    echo "  🔎 Diagnostics:"
+    if command -v python3 >/dev/null 2>&1; then
+        echo "     python3: $(python3 --version 2>&1)"
+    else
+        echo "     python3: not found"
+    fi
+
+    if [ -x ".venv/bin/python" ]; then
+        echo "     .venv python: $(.venv/bin/python --version 2>&1)"
+    elif [ -d ".venv" ]; then
+        echo "     .venv exists but may be incomplete"
+    else
+        echo "     .venv not found"
+    fi
+
+    if command -v pip >/dev/null 2>&1; then
+        local global_user
+        global_user="$(pip config get global.user 2>/dev/null || true)"
+        local user_user
+        user_user="$(pip config get user.user 2>/dev/null || true)"
+        [ -n "$global_user" ] && echo "     pip config global.user=$global_user"
+        [ -n "$user_user" ] && echo "     pip config user.user=$user_user"
+    fi
+
+    echo "  💡 Tip: run 'bash -x setup.sh' for full trace"
+}
+
+trap 'on_setup_error $LINENO' ERR
 
 echo ""
 echo "  ┌─────────────────────────────────────┐"
@@ -51,10 +90,24 @@ echo "  📁 isrc101_agent/tools/ $(ls isrc101_agent/tools/*.py 2>/dev/null | wc
 
 # ── Venv + install ─────────────────────────────────
 
-[ ! -d ".venv" ] && python3 -m venv .venv
+if [ ! -f ".venv/bin/activate" ]; then
+    [ -d ".venv" ] && echo "  ⚠️  Found incomplete .venv, recreating..."
+    rm -rf .venv
+
+    # Custom shell prompt label shown after activation: (isrc101)
+    if ! python3 -m venv --prompt isrc101 .venv; then
+        echo "  ❌ Failed to create virtual environment."
+        echo "     Please install venv support, then rerun setup.sh"
+        echo "     Ubuntu/Debian: sudo apt install -y python3-venv python3.12-venv"
+        exit 1
+    fi
+fi
+
 source .venv/bin/activate
-pip install --upgrade pip -q 2>/dev/null
-pip install -e . -q 2>/dev/null
+if ! python -m pip install --upgrade pip --no-user -q; then
+    echo "  ⚠️  Skipping pip self-upgrade; using current pip"
+fi
+python -m pip install -e . --no-user -q
 echo "  ✓ Installed (editable mode)"
 
 # ── Generate .agent.conf.yml ───────────────────────
@@ -63,7 +116,7 @@ if [ ! -f ".agent.conf.yml" ]; then
     cat > .agent.conf.yml << 'YAML_EOF'
 # ══════════════════════════════════════════════════
 #  isrc101-agent Configuration
-#  /model to switch models interactively
+#  /model and /skills to switch behavior interactively
 # ══════════════════════════════════════════════════
 
 active-model: local
@@ -73,7 +126,13 @@ auto-confirm: false
 chat-mode: code
 auto-commit: true
 commit-prefix: "isrc101: "
-command-timeout: 30
+command-timeout: 180
+skills-dir: skills
+web-enabled: false
+enabled-skills:
+  - python-bugfix
+  - test-designer
+  - security-review
 
 models:
 
@@ -84,7 +143,7 @@ models:
     api-key: not-needed
     description: "Local model (vLLM / llama.cpp on :8080)"
     temperature: 0.0
-    max-tokens: 8192
+    max-tokens: 4096
 
   deepseek-chat:
     provider: deepseek
@@ -92,7 +151,7 @@ models:
     api-key: YOUR_DEEPSEEK_API_KEY_HERE
     description: "DeepSeek V3.2 (non-thinking)"
     temperature: 0.0
-    max-tokens: 8192
+    max-tokens: 4096
 
   deepseek-reasoner:
     provider: deepseek
@@ -100,7 +159,7 @@ models:
     api-key: YOUR_DEEPSEEK_API_KEY_HERE
     description: "DeepSeek V3.2 (thinking)"
     temperature: 0.0
-    max-tokens: 8192
+    max-tokens: 4096
 
   # ── BLSC Qwen3-VL models ──
   # Get API key from your BLSC account
@@ -112,7 +171,7 @@ models:
     api-key: YOUR_BLSC_API_KEY_HERE
     description: "Qwen3-VL 235B Instruct (BLSC)"
     temperature: 0.0
-    max-tokens: 8192
+    max-tokens: 4096
 
   qwen3-vl-235b-think:
     provider: openai
@@ -121,7 +180,7 @@ models:
     api-key: YOUR_BLSC_API_KEY_HERE
     description: "Qwen3-VL 235B Thinking (BLSC)"
     temperature: 0.0
-    max-tokens: 8192
+    max-tokens: 4096
 
   qwen3-vl-30b:
     provider: openai
@@ -130,7 +189,7 @@ models:
     api-key: YOUR_BLSC_API_KEY_HERE
     description: "Qwen3-VL 30B Instruct (BLSC)"
     temperature: 0.0
-    max-tokens: 8192
+    max-tokens: 4096
 
   qwen3-vl-30b-think:
     provider: openai
@@ -139,35 +198,13 @@ models:
     api-key: YOUR_BLSC_API_KEY_HERE
     description: "Qwen3-VL 30B Thinking (BLSC)"
     temperature: 0.0
-    max-tokens: 8192
+    max-tokens: 4096
 
 
 YAML_EOF
     echo "  ✓ Created .agent.conf.yml"
 else
     echo "  ✓ .agent.conf.yml exists"
-fi
-
-# ── Generate AGENT.md ──────────────────────────────
-
-if [ ! -f "AGENT.md" ]; then
-    cat > AGENT.md << 'MD_EOF'
-# Project Instructions
-
-<!-- isrc101-agent reads this file automatically. -->
-
-## Tech Stack
-<!-- e.g. Python 3.12, CUDA, C++ -->
-
-## Coding Conventions
-<!-- e.g. PEP 8, type hints -->
-
-## Important Notes
-<!-- e.g. Don't touch migrations/ -->
-MD_EOF
-    echo "  ✓ Created AGENT.md"
-else
-    echo "  ✓ AGENT.md exists"
 fi
 
 # ── Done ───────────────────────────────────────────
@@ -181,6 +218,8 @@ echo "    cd /path/to/project"
 echo "    isrc run"
 echo ""
 echo "    /model   switch models (↑↓ Enter)"
+echo "    /skills  select built-in skills"
+echo "    /web     toggle web access"
 echo "    /help    all commands"
 echo "  ═══════════════════════════════════════"
 echo ""

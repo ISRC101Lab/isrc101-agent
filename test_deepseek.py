@@ -109,6 +109,10 @@ def test_deepseek(model_name: str, api_key: str = None):
         print(f"\n{'=' * 60}\n")
         return False
 
+
+# Keep as manual integration script; avoid pytest auto-collect.
+test_deepseek.__test__ = False
+
 def main():
     """主函数"""
     import argparse

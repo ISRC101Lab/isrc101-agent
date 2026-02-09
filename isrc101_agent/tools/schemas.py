@@ -66,14 +66,61 @@ TOOL_SCHEMAS = [
             "command": {"type": "string", "description": "Bash command to run"},
         }, "required": ["command"]},
     }},
+    {"type": "function", "function": {
+        "name": "read_image",
+        "description": "Read an image file for visual analysis. Supports PNG, JPG, GIF, WebP.",
+        "parameters": {"type": "object", "properties": {
+            "path": {"type": "string", "description": "Image file path relative to project root"},
+        }, "required": ["path"]},
+    }},
+    {"type": "function", "function": {
+        "name": "web_fetch",
+        "description": "Fetch a URL and return its text content. Use for docs/API refs. Available only when /web is ON.",
+        "parameters": {"type": "object", "properties": {
+            "url": {"type": "string", "description": "URL to fetch (http/https)"},
+        }, "required": ["url"]},
+    }},
 ]
 
-READ_ONLY_TOOLS = ["read_file", "list_directory", "search_files"]
+
+def get_all_tools() -> list:
+    """Return all available tools."""
+    return TOOL_SCHEMAS
+
+
+def get_tools_filtered(web_enabled: bool = False, mode: str = "code") -> list:
+    """Return tools filtered by web toggle and chat mode."""
+    mode_allowed = {
+        schema.get("function", {}).get("name")
+        for schema in get_tools_for_mode(mode)
+    }
+
+    filtered = []
+    for schema in TOOL_SCHEMAS:
+        name = schema.get("function", {}).get("name")
+        if name not in mode_allowed:
+            continue
+        if not web_enabled and name == "web_fetch":
+            continue
+        filtered.append(schema)
+    return filtered
+
 
 def get_tools_for_mode(mode: str) -> list:
-    if mode == "ask":
-        return [t for t in TOOL_SCHEMAS if t["function"]["name"] in READ_ONLY_TOOLS]
-    elif mode == "architect":
-        return [t for t in TOOL_SCHEMAS
-                if t["function"]["name"] in ("read_file", "list_directory", "search_files")]
+    """Return tools allowed in the given chat mode."""
+    if mode == "code":
+        return TOOL_SCHEMAS
+
+    if mode in ("ask", "architect"):
+        read_only = {
+            "read_file",
+            "list_directory",
+            "search_files",
+        }
+        return [
+            schema
+            for schema in TOOL_SCHEMAS
+            if schema.get("function", {}).get("name") in read_only
+        ]
+
     return TOOL_SCHEMAS

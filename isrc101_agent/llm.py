@@ -1,11 +1,39 @@
 """LLM adapter via litellm."""
 
 import json
+import random
+import time
+import threading
 from typing import List, Dict, Any, Optional, Generator, Tuple
 from dataclasses import dataclass
 
-import litellm
-litellm.suppress_debug_info = True
+from importlib import import_module
+
+_LITELLM = None
+
+
+def _get_litellm():
+    """Lazily import litellm to avoid slow CLI startup."""
+    global _LITELLM
+    if _LITELLM is None:
+        module = import_module("litellm")
+        module.suppress_debug_info = True
+        _LITELLM = module
+    return _LITELLM
+
+from .logger import get_logger
+
+_log = get_logger(__name__)
+
+__all__ = ["LLMAdapter", "LLMResponse", "ToolCall", "build_system_prompt"]
+
+
+# Retry defaults for transient LLM/API failures.
+MAX_RETRIES = 3
+INITIAL_RETRY_DELAY = 1.0
+RETRY_BACKOFF_FACTOR = 2.0
+MAX_RETRY_DELAY = 30.0
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503}
 
 
 @dataclass
@@ -33,7 +61,7 @@ You help users understand, modify, and manage their codebase through natural con
 ## Identity:
 - Your name is isrc101-agent (or isrc101 for short).
 - When the user asks you to introduce yourself, describe your capabilities concretely:
-  what tools you have, what you can do with their codebase, and what modes are available.
+  what tools you have and what you can do with their codebase.
 - Be specific and practical, not vague or generic.
 
 ## Core workflow:
@@ -48,33 +76,37 @@ You help users understand, modify, and manage their codebase through natural con
 - When str_replace fails, re-read the file and retry with the exact text.
 - Briefly explain your intent before making changes.
 - Respond in the same language the user uses.
+
+## Available tools:
+- read_file, create_file, write_file, str_replace, delete_file: File operations
+- list_directory, search_files: Explore codebase
+- bash: Execute shell commands
+- read_image: Analyze images (PNG, JPG, etc.)
+- web_fetch: Fetch URL content for documentation or API references (only when web is enabled)
 """
 
 MODE_PROMPTS = {
     "code": BASE_SYSTEM_PROMPT,
     "ask": (
-        BASE_SYSTEM_PROMPT +
-        "\n\n## Mode: READ-ONLY (ask)\n"
-        "You are in read-only analysis mode. You can use read_file, list_directory, and search_files "
-        "to explore the codebase, but CANNOT modify files or execute commands.\n"
-        "Help users understand code, find bugs, explain architecture, and suggest improvements.\n"
-        "When suggesting changes, describe them clearly so the user can apply them in code mode."
+        BASE_SYSTEM_PROMPT
+        + "\n\n## Mode: READ-ONLY (ask)\n"
+        + "You are in read-only analysis mode. Do not modify files or execute shell commands. "
+        + "Focus on explanation, diagnosis, and actionable suggestions."
     ),
     "architect": (
-        BASE_SYSTEM_PROMPT +
-        "\n\n## Mode: ARCHITECT\n"
-        "You are in architect mode. Use read_file, list_directory, and search_files to analyze "
-        "the codebase structure. Do NOT make changes.\n"
-        "Focus on: design patterns, dependency analysis, refactoring plans, and architecture decisions.\n"
-        "Produce clear, numbered action plans that the user can approve and execute in code mode."
+        BASE_SYSTEM_PROMPT
+        + "\n\n## Mode: ARCHITECT\n"
+        + "You are in architecture mode. Do not modify files. "
+        + "Focus on design trade-offs, plans, and migration strategies."
     ),
 }
 
 
-def build_system_prompt(mode: str, project_instructions: Optional[str] = None) -> str:
+def build_system_prompt(mode: str = "code",
+                        skill_instructions: Optional[str] = None) -> str:
     prompt = MODE_PROMPTS.get(mode, MODE_PROMPTS["code"])
-    if project_instructions:
-        prompt += f"\n\n## Project instructions (AGENT.md):\n{project_instructions}"
+    if skill_instructions:
+        prompt += f"\n\n{skill_instructions}"
     return prompt
 
 
@@ -99,6 +131,123 @@ class LLMAdapter:
         m = self.model.lower()
         return "reasoner" in m or "thinking" in m
 
+    def _is_litellm_exception(self, error: Exception, *names: str) -> bool:
+        """Safely check litellm exception classes by name."""
+        for name in names:
+            litellm_module = _get_litellm()
+            exc_type = getattr(litellm_module.exceptions, name, None)
+            if exc_type and isinstance(error, exc_type):
+                return True
+        return False
+
+    def _extract_status_code(self, error: Exception) -> Optional[int]:
+        """Extract HTTP status code from different exception shapes."""
+        candidates = [
+            getattr(error, "status_code", None),
+            getattr(error, "http_status", None),
+            getattr(error, "status", None),
+        ]
+
+        response = getattr(error, "response", None)
+        if response is not None:
+            candidates.append(getattr(response, "status_code", None))
+
+        for value in candidates:
+            try:
+                if value is not None:
+                    return int(value)
+            except (TypeError, ValueError):
+                continue
+
+        return None
+
+    def _is_timeout_error(self, error: Exception) -> bool:
+        """Match timeout exceptions from litellm and common HTTP clients."""
+        if isinstance(error, TimeoutError):
+            return True
+
+        if self._is_litellm_exception(error, "Timeout"):
+            return True
+
+        name = type(error).__name__.lower()
+        if "timeout" in name:
+            return True
+
+        message = str(error).lower()
+        return "timed out" in message or "timeout" in message
+
+    def _is_retryable_error(self, error: Exception) -> bool:
+        """Return True only for transient/retry-safe error types."""
+        if self._is_litellm_exception(error, "AuthenticationError"):
+            return False
+
+        if isinstance(error, ConnectionError):
+            return True
+
+        if self._is_litellm_exception(error, "APIConnectionError", "RateLimitError"):
+            return True
+
+        if self._is_timeout_error(error):
+            return True
+
+        status_code = self._extract_status_code(error)
+        if status_code in RETRYABLE_STATUS_CODES:
+            return True
+
+        message = str(error).lower()
+        return "rate limit" in message
+
+    def _log_retry(self, attempt: int) -> None:
+        _log.info("Retrying (attempt %d/%d)...", attempt, MAX_RETRIES)
+
+    def _next_retry_delay(self, delay: float) -> float:
+        """Apply jitter and exponential backoff, capped at MAX_RETRY_DELAY."""
+        jitter = random.uniform(0, max(0.1, delay * 0.25))
+        sleep_seconds = min(delay + jitter, MAX_RETRY_DELAY)
+        time.sleep(sleep_seconds)
+        return min(delay * RETRY_BACKOFF_FACTOR, MAX_RETRY_DELAY)
+
+    def _raise_chat_error(self, error: Exception) -> None:
+        if self._is_litellm_exception(error, "AuthenticationError"):
+            raise ConnectionError(f"Auth failed. Check API key.\n{error}") from error
+        if self._is_litellm_exception(error, "APIConnectionError"):
+            base = self.api_base or "default"
+            raise ConnectionError(
+                f"Cannot connect: model={self.model}, base={base}\n{error}"
+            ) from error
+        raise ConnectionError(f"LLM error: {type(error).__name__}: {error}") from error
+
+    def warmup(self) -> bool:
+        """Synchronously warm up heavy LLM dependencies."""
+        try:
+            _get_litellm()
+            return True
+        except Exception:
+            return False
+
+    def warmup_async(self) -> None:
+        """Warm up LLM dependencies in background without blocking startup."""
+        thread = threading.Thread(target=self.warmup, daemon=True, name="llm-warmup")
+        thread.start()
+
+    def _completion_with_retry(self, kwargs: Dict[str, Any]) -> Any:
+        """Run litellm.completion with retry for transient errors."""
+        delay = INITIAL_RETRY_DELAY
+
+        for retry_index in range(MAX_RETRIES + 1):
+            try:
+                litellm_module = _get_litellm()
+                return litellm_module.completion(**kwargs)
+            except Exception as e:
+                if retry_index < MAX_RETRIES and self._is_retryable_error(e):
+                    self._log_retry(retry_index + 1)
+                    delay = self._next_retry_delay(delay)
+                    continue
+                self._raise_chat_error(e)
+
+        # Defensive fallback; loop always returns or raises.
+        raise ConnectionError("LLM request failed after retries")
+
     def chat(self, messages: List[Dict[str, Any]], tools: Optional[List[Dict]] = None) -> LLMResponse:
         kwargs: Dict[str, Any] = {
             "model": self.model, "messages": messages,
@@ -112,14 +261,7 @@ class LLMAdapter:
         if self.api_key:
             kwargs["api_key"] = self.api_key
 
-        try:
-            response = litellm.completion(**kwargs)
-        except litellm.exceptions.AuthenticationError as e:
-            raise ConnectionError(f"Auth failed. Check API key.\n{e}")
-        except litellm.exceptions.APIConnectionError as e:
-            raise ConnectionError(f"Cannot connect: model={self.model}, base={self.api_base or 'default'}\n{e}")
-        except Exception as e:
-            raise ConnectionError(f"LLM error: {type(e).__name__}: {e}")
+        response = self._completion_with_retry(kwargs)
 
         choice = response.choices[0]
         msg = choice.message
@@ -174,87 +316,112 @@ class LLMAdapter:
         if self.api_key:
             kwargs["api_key"] = self.api_key
 
-        # Try streaming; fall back to non-streaming on failure
-        try:
-            response_stream = litellm.completion(**kwargs)
-        except Exception:
-            # Fallback: non-streaming
-            response = self.chat(messages, tools)
-            if response.content:
-                yield ("text", response.content)
-            yield ("done", response)
-            return
+        delay = INITIAL_RETRY_DELAY
+        last_error: Optional[Exception] = None
 
-        full_content = ""
-        reasoning_parts = ""
-        tc_data: Dict[int, Dict[str, str]] = {}
-        usage = None
+        for retry_index in range(MAX_RETRIES + 1):
+            full_content = ""
+            reasoning_parts = ""
+            tc_data: Dict[int, Dict[str, str]] = {}
+            usage = None
 
-        try:
-            for chunk in response_stream:
-                # Usage-only final chunk (some providers)
-                if not chunk.choices:
+            try:
+                litellm_module = _get_litellm()
+                response_stream = litellm_module.completion(**kwargs)
+
+                for chunk in response_stream:
+                    # Usage-only final chunk (some providers)
+                    if not chunk.choices:
+                        if hasattr(chunk, "usage") and chunk.usage:
+                            usage = {
+                                "prompt_tokens": chunk.usage.prompt_tokens,
+                                "completion_tokens": chunk.usage.completion_tokens,
+                                "total_tokens": chunk.usage.total_tokens,
+                            }
+                        continue
+
+                    delta = chunk.choices[0].delta
+
+                    # Text
+                    if getattr(delta, "content", None):
+                        full_content += delta.content
+                        yield ("text", delta.content)
+
+                    # Reasoning (DeepSeek Reasoner)
+                    rc = getattr(delta, "reasoning_content", None)
+                    if rc:
+                        reasoning_parts += rc
+                        yield ("reasoning", rc)
+
+                    # Tool calls (accumulated across chunks)
+                    if getattr(delta, "tool_calls", None):
+                        for tc_delta in delta.tool_calls:
+                            idx = tc_delta.index
+                            if idx not in tc_data:
+                                tc_data[idx] = {"id": "", "name": "", "args": ""}
+                            if tc_delta.id:
+                                tc_data[idx]["id"] = tc_delta.id
+                            if tc_delta.function:
+                                if tc_delta.function.name:
+                                    tc_data[idx]["name"] = tc_delta.function.name
+                                if tc_delta.function.arguments:
+                                    tc_data[idx]["args"] += tc_delta.function.arguments
+
+                    # Usage from chunk
                     if hasattr(chunk, "usage") and chunk.usage:
-                        usage = {"prompt_tokens": chunk.usage.prompt_tokens,
-                                 "completion_tokens": chunk.usage.completion_tokens,
-                                 "total_tokens": chunk.usage.total_tokens}
+                        usage = {
+                            "prompt_tokens": chunk.usage.prompt_tokens,
+                            "completion_tokens": chunk.usage.completion_tokens,
+                            "total_tokens": chunk.usage.total_tokens,
+                        }
+
+                # Build tool calls
+                tool_calls = None
+                if tc_data:
+                    tool_calls = []
+                    for idx in sorted(tc_data.keys()):
+                        tc = tc_data[idx]
+                        try:
+                            args = json.loads(tc["args"])
+                        except json.JSONDecodeError:
+                            args = {"_raw": tc["args"]}
+                        tool_calls.append(ToolCall(id=tc["id"], name=tc["name"], arguments=args))
+
+                # Reasoning content for reasoner models
+                reasoning_content = reasoning_parts if reasoning_parts else None
+                if reasoning_content is None and self.is_thinking_model:
+                    reasoning_content = ""
+
+                yield ("done", LLMResponse(
+                    content=full_content or None,
+                    tool_calls=tool_calls,
+                    usage=usage,
+                    reasoning_content=reasoning_content,
+                ))
+                return
+            except Exception as e:
+                last_error = e
+                has_partial_stream = bool(full_content or reasoning_parts or tc_data)
+
+                # Only retry if the stream failed before emitting a partial response.
+                if (
+                    retry_index < MAX_RETRIES
+                    and self._is_retryable_error(e)
+                    and not has_partial_stream
+                ):
+                    self._log_retry(retry_index + 1)
+                    delay = self._next_retry_delay(delay)
                     continue
 
-                delta = chunk.choices[0].delta
+                if has_partial_stream:
+                    raise ConnectionError(f"Stream interrupted: {type(e).__name__}: {e}") from e
+                break
 
-                # Text
-                if getattr(delta, "content", None):
-                    full_content += delta.content
-                    yield ("text", delta.content)
+        # Final fallback: non-streaming call (already retried in chat()).
+        if last_error is not None and self._is_litellm_exception(last_error, "AuthenticationError"):
+            self._raise_chat_error(last_error)
 
-                # Reasoning (DeepSeek Reasoner)
-                rc = getattr(delta, "reasoning_content", None)
-                if rc:
-                    reasoning_parts += rc
-                    yield ("reasoning", rc)
-
-                # Tool calls (accumulated across chunks)
-                if getattr(delta, "tool_calls", None):
-                    for tc_delta in delta.tool_calls:
-                        idx = tc_delta.index
-                        if idx not in tc_data:
-                            tc_data[idx] = {"id": "", "name": "", "args": ""}
-                        if tc_delta.id:
-                            tc_data[idx]["id"] = tc_delta.id
-                        if tc_delta.function:
-                            if tc_delta.function.name:
-                                tc_data[idx]["name"] = tc_delta.function.name
-                            if tc_delta.function.arguments:
-                                tc_data[idx]["args"] += tc_delta.function.arguments
-
-                # Usage from chunk
-                if hasattr(chunk, "usage") and chunk.usage:
-                    usage = {"prompt_tokens": chunk.usage.prompt_tokens,
-                             "completion_tokens": chunk.usage.completion_tokens,
-                             "total_tokens": chunk.usage.total_tokens}
-        except Exception as e:
-            raise ConnectionError(f"Stream interrupted: {type(e).__name__}: {e}")
-
-        # Build tool calls
-        tool_calls = None
-        if tc_data:
-            tool_calls = []
-            for idx in sorted(tc_data.keys()):
-                tc = tc_data[idx]
-                try:
-                    args = json.loads(tc["args"])
-                except json.JSONDecodeError:
-                    args = {"_raw": tc["args"]}
-                tool_calls.append(ToolCall(id=tc["id"], name=tc["name"], arguments=args))
-
-        # Reasoning content for reasoner models
-        reasoning_content = reasoning_parts if reasoning_parts else None
-        if reasoning_content is None and self.is_thinking_model:
-            reasoning_content = ""
-
-        yield ("done", LLMResponse(
-            content=full_content or None,
-            tool_calls=tool_calls,
-            usage=usage,
-            reasoning_content=reasoning_content,
-        ))
+        response = self.chat(messages, tools)
+        if response.content:
+            yield ("text", response.content)
+        yield ("done", response)

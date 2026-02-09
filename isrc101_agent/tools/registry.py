@@ -1,9 +1,10 @@
 """Tool registry: dispatches tool calls to implementations."""
-from typing import Any, Dict
+from typing import Any, Dict, Set
 from .file_ops import FileOps, FileOperationError
 from .shell import ShellExecutor
 from .git_ops import GitOps
-from .schemas import get_tools_for_mode
+from .web_ops import WebOps, WebOpsError
+from .schemas import get_tools_filtered
 
 class ToolRegistry:
     def __init__(self, project_root: str, blocked_commands: list = None,
@@ -11,21 +12,41 @@ class ToolRegistry:
         self.file_ops = FileOps(project_root)
         self.shell = ShellExecutor(project_root, blocked_commands, command_timeout)
         self.git = GitOps(project_root, commit_prefix=commit_prefix)
-        self._mode = "code"
+        self.web = WebOps()
+        self._web_enabled = False
+        self.mode = "code"
 
     @property
-    def mode(self):
-        return self._mode
+    def files(self):
+        """Access file operations (for undo, preview, etc.)."""
+        return self.file_ops
 
-    @mode.setter
-    def mode(self, value):
-        self._mode = value
+    @property
+    def web_enabled(self):
+        return self._web_enabled
+
+    @web_enabled.setter
+    def web_enabled(self, value: bool):
+        self._web_enabled = value
 
     @property
     def schemas(self):
-        return get_tools_for_mode(self._mode)
+        return get_tools_filtered(self._web_enabled, self.mode)
+
+    def _allowed_tool_names(self) -> Set[str]:
+        return {
+            schema.get("function", {}).get("name")
+            for schema in self.schemas
+            if schema.get("function", {}).get("name")
+        }
+
+    def _is_tool_allowed(self, tool_name: str) -> bool:
+        return tool_name in self._allowed_tool_names()
 
     def execute(self, tool_name: str, arguments: Dict[str, Any]) -> str:
+        if not self._is_tool_allowed(tool_name):
+            return f"Tool '{tool_name}' is disabled in mode '{self.mode}'."
+
         try:
             match tool_name:
                 case "read_file":
@@ -48,10 +69,19 @@ class ToolRegistry:
                         arguments.get("path", "."), arguments.get("include"))
                 case "bash":
                     return self.shell.execute(arguments["command"])
+                case "read_image":
+                    img = self.file_ops.read_image(arguments["path"])
+                    return f"[IMAGE:{img['path']}:{img['media_type']}:{img['size']}]"
+                case "web_fetch":
+                    if not self._web_enabled:
+                        return "Web access is disabled. Use /web to enable it."
+                    return self.web.fetch(arguments["url"])
                 case _:
                     return f"Unknown tool: {tool_name}"
         except FileOperationError as e:
             return f"Error: {e}"
+        except WebOpsError as e:
+            return f"Web error: {e}"
         except KeyError as e:
             return f"Missing argument: {e}"
         except Exception as e:

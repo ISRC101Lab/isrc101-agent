@@ -18,7 +18,16 @@ from dotenv import load_dotenv
 CONFIG_DIR = Path.home() / ".isrc101-agent"
 CONFIG_FILE = CONFIG_DIR / "config.yml"
 HISTORY_FILE = CONFIG_DIR / "history.txt"
-PROJECT_INSTRUCTION_NAME = "AGENT.md"
+
+DEFAULT_ENABLED_SKILLS = [
+    "python-bugfix",
+    "test-designer",
+    "security-review",
+]
+
+REASONING_DISPLAY_MODES = {"off", "summary", "full"}
+WEB_DISPLAY_MODES = {"summary", "full"}
+STREAM_PROFILES = {"stable", "smooth", "ultra"}
 
 
 @dataclass
@@ -86,8 +95,16 @@ class Config:
     )
     command_timeout: int = 30
     verbose: bool = False
+    skills_dir: str = "skills"
+    enabled_skills: List[str] = field(default_factory=lambda: list(DEFAULT_ENABLED_SKILLS))
+    web_enabled: bool = False  # /web toggle
+    reasoning_display: str = "summary"
+    web_display: str = "summary"
+    stream_profile: str = "ultra"
+    web_preview_lines: int = 3
+    web_preview_chars: int = 360
+    web_context_chars: int = 4000
     project_root: Optional[str] = None
-    project_instructions: Optional[str] = None
     _config_source: str = ""
 
     @classmethod
@@ -120,13 +137,6 @@ class Config:
 
         config._apply_env()
         config.project_root = str(project_path)
-
-        for search_dir in [project_path, git_root]:
-            if search_dir:
-                md_file = search_dir / PROJECT_INSTRUCTION_NAME
-                if md_file.exists():
-                    config.project_instructions = md_file.read_text(encoding="utf-8")
-                    break
         return config
 
     @classmethod
@@ -136,21 +146,21 @@ class Config:
                 name="local", provider="local", model="openai/model",
                 api_base="http://localhost:8080/v1", api_key="not-needed",
                 description="Local model (vLLM / llama.cpp on :8080)",
-                max_tokens=8192, context_window=32000,
+                max_tokens=4096, context_window=32000,
             ),
             "deepseek-chat": ModelPreset(
                 name="deepseek-chat", provider="deepseek",
                 model="deepseek/deepseek-chat",
                 api_key_env="DEEPSEEK_API_KEY",
                 description="DeepSeek V3.2 (non-thinking)",
-                max_tokens=8192,
+                max_tokens=4096,
             ),
             "deepseek-reasoner": ModelPreset(
                 name="deepseek-reasoner", provider="deepseek",
                 model="deepseek/deepseek-reasoner",
                 api_key_env="DEEPSEEK_API_KEY",
                 description="DeepSeek V3.2 (thinking)",
-                max_tokens=8192,
+                max_tokens=4096,
             ),
             "qwen3-vl-235b": ModelPreset(
                 name="qwen3-vl-235b", provider="openai",
@@ -158,7 +168,7 @@ class Config:
                 api_base="https://llmapi.blsc.cn/v1/",
                 api_key_env="BLSC_API_KEY",
                 description="Qwen3-VL 235B Instruct (BLSC)",
-                max_tokens=8192,
+                max_tokens=4096,
             ),
             "qwen3-vl-235b-think": ModelPreset(
                 name="qwen3-vl-235b-think", provider="openai",
@@ -166,7 +176,7 @@ class Config:
                 api_base="https://llmapi.blsc.cn/v1/",
                 api_key_env="BLSC_API_KEY",
                 description="Qwen3-VL 235B Thinking (BLSC)",
-                max_tokens=8192,
+                max_tokens=4096,
             ),
             "qwen3-vl-30b": ModelPreset(
                 name="qwen3-vl-30b", provider="openai",
@@ -174,7 +184,7 @@ class Config:
                 api_base="https://llmapi.blsc.cn/v1/",
                 api_key_env="BLSC_API_KEY",
                 description="Qwen3-VL 30B Instruct (BLSC)",
-                max_tokens=8192,
+                max_tokens=4096,
             ),
             "qwen3-vl-30b-think": ModelPreset(
                 name="qwen3-vl-30b-think", provider="openai",
@@ -182,7 +192,7 @@ class Config:
                 api_base="https://llmapi.blsc.cn/v1/",
                 api_key_env="BLSC_API_KEY",
                 description="Qwen3-VL 30B Thinking (BLSC)",
-                max_tokens=8192,
+                max_tokens=4096,
             ),
         }
 
@@ -206,6 +216,34 @@ class Config:
         self.commit_prefix = data.get("commit-prefix", "isrc101: ")
         self.command_timeout = data.get("command-timeout", 30)
         self.verbose = data.get("verbose", False)
+        self.web_enabled = data.get("web-enabled", False)
+        self.reasoning_display = self._normalize_reasoning_display(
+            data.get("reasoning-display", "summary")
+        )
+        self.web_display = self._normalize_web_display(
+            data.get("web-display", "summary")
+        )
+        self.stream_profile = self._normalize_stream_profile(
+            data.get("stream-profile", "ultra")
+        )
+        self.web_preview_lines = self._coerce_positive_int(
+            data.get("web-preview-lines", 3), default=3, min_value=1, max_value=12
+        )
+        self.web_preview_chars = self._coerce_positive_int(
+            data.get("web-preview-chars", 360), default=360, min_value=80, max_value=4000
+        )
+        self.web_context_chars = self._coerce_positive_int(
+            data.get("web-context-chars", 4000), default=4000, min_value=500, max_value=20000
+        )
+        self.skills_dir = data.get("skills-dir", "skills")
+        if "enabled-skills" in data:
+            raw_enabled = data.get("enabled-skills", [])
+            if isinstance(raw_enabled, list):
+                self.enabled_skills = [str(item) for item in raw_enabled if str(item).strip()]
+            else:
+                self.enabled_skills = []
+        else:
+            self.enabled_skills = list(DEFAULT_ENABLED_SKILLS)
         if "blocked-commands" in data:
             self.blocked_commands = data["blocked-commands"]
 
@@ -253,6 +291,15 @@ class Config:
             "commit-prefix": self.commit_prefix,
             "command-timeout": self.command_timeout,
             "verbose": self.verbose,
+            "web-enabled": self.web_enabled,
+            "reasoning-display": self.reasoning_display,
+            "web-display": self.web_display,
+            "stream-profile": self.stream_profile,
+            "web-preview-lines": self.web_preview_lines,
+            "web-preview-chars": self.web_preview_chars,
+            "web-context-chars": self.web_context_chars,
+            "skills-dir": self.skills_dir,
+            "enabled-skills": self.enabled_skills,
             "models": {},
         }
         for name, m in self.models.items():
@@ -302,10 +349,47 @@ class Config:
             "API base": p.api_base or "(provider default)",
             "API key": "✓" if p.resolve_api_key() else "✗ not set",
             "Chat mode": self.chat_mode,
+            "Skills": ", ".join(self.enabled_skills) if self.enabled_skills else "(none)",
+            "Web": "ON" if self.web_enabled else "OFF",
+            "Thinking display": self.reasoning_display,
+            "Web display": self.web_display,
+            "Stream profile": self.stream_profile,
             "Project": self.project_root,
-            "AGENT.md": "✓" if self.project_instructions else "✗",
             "Config": self._config_source or "(defaults)",
         }
+
+    @staticmethod
+    def _normalize_reasoning_display(value) -> str:
+        mode = str(value or "summary").strip().lower()
+        if mode not in REASONING_DISPLAY_MODES:
+            return "summary"
+        return mode
+
+    @staticmethod
+    def _normalize_web_display(value) -> str:
+        mode = str(value or "summary").strip().lower()
+        if mode not in WEB_DISPLAY_MODES:
+            return "summary"
+        return mode
+
+    @staticmethod
+    def _normalize_stream_profile(value) -> str:
+        profile = str(value or "ultra").strip().lower()
+        if profile not in STREAM_PROFILES:
+            return "ultra"
+        return profile
+
+    @staticmethod
+    def _coerce_positive_int(value, default: int, min_value: int = 1, max_value: int = 100000) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return default
+        if parsed < min_value:
+            return min_value
+        if parsed > max_value:
+            return max_value
+        return parsed
 
     @staticmethod
     def _find_git_root(path: Path) -> Optional[Path]:
