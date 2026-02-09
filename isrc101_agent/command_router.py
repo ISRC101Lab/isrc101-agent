@@ -68,12 +68,8 @@ def _resolve_command(raw_cmd: str, console: Console) -> str:
         return _SLASH_ALIASES[cmd]
 
     matches = [candidate for candidate in _SLASH_COMMAND_NAMES if candidate.startswith(cmd)]
-    if len(matches) == 1:
+    if matches:
         return matches[0]
-    if len(matches) > 1:
-        options = ", ".join(f"[bold]{item}[/bold]" for item in matches)
-        console.print(f"  [yellow]Ambiguous: {cmd} → {options}[/yellow]")
-        return ""
 
     return cmd
 

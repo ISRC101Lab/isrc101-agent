@@ -57,7 +57,7 @@ SLASH_COMMAND_SPECS: tuple[SlashCommandSpec, ...] = (
 )
 
 SLASH_COMMANDS = [spec.command for spec in SLASH_COMMAND_SPECS]
-MAX_SLASH_MENU_ITEMS = 7
+MAX_SLASH_MENU_ITEMS = 16
 
 
 def build_banner(version: str) -> str:
