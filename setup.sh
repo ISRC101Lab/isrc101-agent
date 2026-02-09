@@ -131,8 +131,19 @@ skills-dir: skills
 web-enabled: false
 enabled-skills:
   - python-bugfix
+  - performance-tuning
   - test-designer
-  - security-review
+  - openai-docs
+  - gh-address-comments
+  - gh-fix-ci
+  - playwright
+
+reasoning-display: summary
+web-display: brief
+answer-style: concise
+web-preview-lines: 2
+web-preview-chars: 220
+web-context-chars: 4000
 
 models:
 

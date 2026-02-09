@@ -37,8 +37,9 @@ class DummyConfig:
                 "context_window": 2048,
             }),
         }
-        self.web_display = "summary"
+        self.web_display = "brief"
         self.reasoning_display = "summary"
+        self.answer_style = "concise"
         self.stream_profile = "ultra"
         self.web_enabled = False
         self.enabled_skills = []
@@ -68,8 +69,9 @@ class DummyAgent:
         self.conversation = []
         self.mode = "code"
         self.skill_instructions = ""
-        self.web_display = "summary"
+        self.web_display = "brief"
         self.reasoning_display = "summary"
+        self.answer_style = "concise"
         self.stream_profile = "ultra"
 
     def reset(self):
@@ -200,6 +202,40 @@ def test_display_stream_updates_agent_and_config():
 
     assert agent.stream_profile == "smooth"
     assert config.stream_profile == "smooth"
+
+
+def test_display_answer_updates_agent_and_config():
+    console, agent, config, llm, tools = _ctx()
+    agent.answer_style = "concise"
+    config.answer_style = "concise"
+
+    handle_command(
+        "/display answer detailed",
+        console=console,
+        agent=agent,
+        config=config,
+        llm=llm,
+        tools=tools,
+    )
+
+    assert agent.answer_style == "detailed"
+    assert config.answer_style == "detailed"
+
+
+def test_display_web_accepts_brief_mode():
+    console, agent, config, llm, tools = _ctx()
+
+    handle_command(
+        "/display web brief",
+        console=console,
+        agent=agent,
+        config=config,
+        llm=llm,
+        tools=tools,
+    )
+
+    assert agent.web_display == "brief"
+    assert config.web_display == "brief"
 
 
 def test_slash_only_defaults_to_first_command():

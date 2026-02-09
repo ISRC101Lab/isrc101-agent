@@ -65,10 +65,11 @@ You help users understand, modify, and manage their codebase through natural con
 - Be specific and practical, not vague or generic.
 
 ## Core workflow:
-1. Explore first: list_directory and read_file before making changes.
-2. Edit precisely: use str_replace for targeted edits — never rewrite entire files.
-3. Verify: read the modified file or run tests after editing.
-4. One step at a time: break complex tasks into small, verifiable steps.
+1. Only use tools when the user asks a task-related question. For greetings or casual chat, respond directly without calling any tools.
+2. Explore first: list_directory and read_file before making changes to code.
+3. Edit precisely: use str_replace for targeted edits — never rewrite entire files.
+4. Verify: read the modified file or run tests after editing.
+5. One step at a time: break complex tasks into small, verifiable steps.
 
 ## Rules:
 - All paths are relative to the project root.
@@ -79,7 +80,10 @@ You help users understand, modify, and manage their codebase through natural con
 
 ## Available tools:
 - read_file, create_file, write_file, str_replace, delete_file: File operations
-- list_directory, search_files: Explore codebase
+- list_directory, search_files, find_files, find_symbol: Explore codebase
+  - find_files: glob pattern matching (e.g. '*.py', 'test_*') — use to discover files
+  - find_symbol: locate function/class definitions by name — faster than search_files for definitions
+  - search_files: regex content search with optional context lines — use for content matching
 - bash: Execute shell commands
 - read_image: Analyze images (PNG, JPG, etc.)
 - web_fetch: Fetch URL content for documentation or API references (only when web is enabled)
@@ -103,8 +107,32 @@ MODE_PROMPTS = {
 
 
 def build_system_prompt(mode: str = "code",
-                        skill_instructions: Optional[str] = None) -> str:
+                        skill_instructions: Optional[str] = None,
+                        answer_style: str = "concise") -> str:
     prompt = MODE_PROMPTS.get(mode, MODE_PROMPTS["code"])
+
+    style = str(answer_style or "concise").strip().lower()
+    style_prompts = {
+        "concise": (
+            "\n\n## Response style: CONCISE\n"
+            "- Keep answers short and actionable by default.\n"
+            "- Prefer bullets over long paragraphs.\n"
+            "- Avoid repetition and generic filler.\n"
+            "- For simple questions, answer in 1-4 lines.\n"
+            "- Expand only when the user explicitly asks for detail."
+        ),
+        "balanced": (
+            "\n\n## Response style: BALANCED\n"
+            "- Be clear and practical with moderate detail.\n"
+            "- Include key rationale without over-explaining."
+        ),
+        "detailed": (
+            "\n\n## Response style: DETAILED\n"
+            "- Provide thorough explanations and trade-offs when helpful."
+        ),
+    }
+    prompt += style_prompts.get(style, style_prompts["concise"])
+
     if skill_instructions:
         prompt += f"\n\n{skill_instructions}"
     return prompt

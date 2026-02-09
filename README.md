@@ -80,11 +80,13 @@ isrc run
 # 系统命令
 /config             显示当前配置
 /web                切换联网抓取开关（web_fetch）
-/web on summary     开启联网并使用摘要显示（推荐）
+/web on brief       开启联网并使用极简显示（推荐）
+/web on summary     开启联网并使用摘要显示
 /web on full        开启联网并显示完整抓取内容
 /display            查看当前 thinking/web 显示策略
 /display thinking off|summary|full
-/display web summary|full
+/display web brief|summary|full
+/display answer concise|balanced|detailed
 /git                查看 Git 状态和提交历史
 /stats              显示会话统计信息
 /reset              清空当前对话
@@ -127,15 +129,22 @@ isrc run
 skills-dir: skills
 enabled-skills:
   - python-bugfix
+  - performance-tuning
   - test-designer
-  - security-review
+  - openai-docs
+  - gh-address-comments
+  - gh-fix-ci
+  - playwright
 ```
 
-内置通用技能（`./skills`）：
+内置高价值技能（`./skills`，优先 OpenAI 官方）：
 - `python-bugfix`: Python 报错定位与最小修复
 - `test-designer`: 高信号测试设计与回归用例
-- `security-review`: 实用安全审查与风险分级
 - `performance-tuning`: 性能剖析与优化闭环
+- `openai-docs`: OpenAI 官方文档检索与权威引用（实时）
+- `gh-address-comments`: 自动化处理 PR review comments 并回填修复
+- `gh-fix-ci`: 定位并修复 GitHub Actions 失败项
+- `playwright`: 真实浏览器自动化验证与调试
 
 ### 自定义配置
 编辑 `.agent.conf.yml` 文件可以：
@@ -152,9 +161,10 @@ enabled-skills:
 
 ```yaml
 reasoning-display: summary   # off | summary | full
-web-display: summary         # summary | full
-web-preview-lines: 3         # 终端展示最多行数
-web-preview-chars: 360       # 终端展示最多字符
+web-display: brief           # brief | summary | full
+answer-style: concise        # concise | balanced | detailed
+web-preview-lines: 2         # 终端展示最多行数
+web-preview-chars: 220       # 终端展示最多字符
 web-context-chars: 4000      # 写入上下文的 web 内容上限
 ```
 

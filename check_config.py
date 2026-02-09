@@ -23,6 +23,8 @@ def check_config():
         print(f"  项目目录: {config.project_root}")
         print(f"  当前模型: {config.active_model}")
         print(f"  Web 开关: {'ON' if config.web_enabled else 'OFF'}")
+        print(f"  Web 显示: {config.web_display}")
+        print(f"  回答风格: {config.answer_style}")
         print(f"  已启用技能: {', '.join(config.enabled_skills) if config.enabled_skills else '(none)'}")
         print()
         
@@ -43,8 +45,7 @@ def check_config():
             
             if preset.provider == "deepseek" and not preset.resolve_api_key():
                 print(f"  ⚠️  警告: DeepSeek 模型需要配置 API 密钥")
-                print(f"      请运行: bash setup_deepseek.sh your-api-key")
-                print(f"      或设置环境变量: export DEEPSEEK_API_KEY='your-key'")
+                print(f"      请设置环境变量: export DEEPSEEK_API_KEY='your-key'")
         
         print("\n" + "=" * 60)
         

@@ -42,7 +42,7 @@ SLASH_COMMAND_SPECS: tuple[SlashCommandSpec, ...] = (
     SlashCommandSpec("/mode", "/mode", "Switch mode", ("code", "ask", "architect")),
     SlashCommandSpec("/skills", "/skills", "Manage skills", ("workflow", "plugin", "ability")),
     SlashCommandSpec("/web", "/web", "Toggle web", ("fetch", "url", "docs")),
-    SlashCommandSpec("/display", "/display", "Display mode", ("thinking", "summary", "verbose")),
+    SlashCommandSpec("/display", "/display", "Display/answer mode", ("thinking", "summary", "verbose", "concise")),
     SlashCommandSpec("/save", "/save [name]", "Save session", ("session", "history")),
     SlashCommandSpec("/load", "/load [name]", "Load session", ("session", "history")),
     SlashCommandSpec("/sessions", "/sessions", "List sessions", ("session", "history")),
@@ -105,6 +105,7 @@ def render_startup(console, config) -> None:
         f"[dim]model[/dim] [bold]{config.active_model}[/bold] [dim]→[/dim] {preset.model}"
         f" [dim]• mode[/dim] {config.chat_mode}"
         f" [dim]• web[/dim] {web_text}"
+        f" [dim]• answer[/dim] {config.answer_style}"
         f" [dim]• key[/dim] {key_status}"
     )
     console.print(

@@ -483,20 +483,20 @@ def _cmd_web(ctx: CommandContext, args: list[str]) -> str:
             ctx.tools.web_enabled = head == "on"
             if len(args) >= 2:
                 mode = args[1].lower()
-                if mode in ("summary", "full"):
+                if mode in ("brief", "summary", "full"):
                     ctx.config.web_display = mode
                     ctx.agent.web_display = mode
                 else:
                     ctx.console.print(
-                        "  [yellow]Usage: /web [on|off] [summary|full] | /web [summary|full][/yellow]"
+                        "  [yellow]Usage: /web [on|off] [brief|summary|full] | /web [brief|summary|full][/yellow]"
                     )
                     return ""
-        elif head in ("summary", "full"):
+        elif head in ("brief", "summary", "full"):
             ctx.config.web_display = head
             ctx.agent.web_display = head
         else:
             ctx.console.print(
-                "  [yellow]Usage: /web [on|off] [summary|full] | /web [summary|full][/yellow]"
+                "  [yellow]Usage: /web [on|off] [brief|summary|full] | /web [brief|summary|full][/yellow]"
             )
             return ""
 
@@ -512,9 +512,10 @@ def _cmd_display(ctx: CommandContext, args: list[str]) -> str:
         ctx.console.print(
             f"  thinking: [bold]{ctx.agent.reasoning_display}[/bold]"
             f"  | web: [bold]{ctx.agent.web_display}[/bold]"
+            f"  | answer: [bold]{ctx.agent.answer_style}[/bold]"
             f"  | stream: [bold]{ctx.agent.stream_profile}[/bold]"
         )
-        ctx.console.print("  Usage: /display thinking <off|summary|full> | /display web <summary|full> | /display stream <stable|smooth|ultra>")
+        ctx.console.print("  Usage: /display thinking <off|summary|full> | /display web <brief|summary|full> | /display answer <concise|balanced|detailed> | /display stream <stable|smooth|ultra>")
         return ""
 
     target = args[0].lower()
@@ -530,14 +531,25 @@ def _cmd_display(ctx: CommandContext, args: list[str]) -> str:
         return ""
 
     if target == "web":
-        if len(args) < 2 or args[1].lower() not in ("summary", "full"):
-            ctx.console.print("  [yellow]Usage: /display web <summary|full>[/yellow]")
+        if len(args) < 2 or args[1].lower() not in ("brief", "summary", "full"):
+            ctx.console.print("  [yellow]Usage: /display web <brief|summary|full>[/yellow]")
             return ""
         mode = args[1].lower()
         ctx.config.web_display = mode
         ctx.agent.web_display = mode
         ctx.config.save()
         ctx.console.print(f"  [green]✓ web display → {mode}[/green]")
+        return ""
+
+    if target == "answer":
+        if len(args) < 2 or args[1].lower() not in ("concise", "balanced", "detailed"):
+            ctx.console.print("  [yellow]Usage: /display answer <concise|balanced|detailed>[/yellow]")
+            return ""
+        style = args[1].lower()
+        ctx.config.answer_style = style
+        ctx.agent.answer_style = style
+        ctx.config.save()
+        ctx.console.print(f"  [green]✓ answer style → {style}[/green]")
         return ""
 
     if target == "stream":
@@ -551,7 +563,7 @@ def _cmd_display(ctx: CommandContext, args: list[str]) -> str:
         ctx.console.print(f"  [green]✓ stream profile → {profile}[/green]")
         return ""
 
-    ctx.console.print("  [yellow]Usage: /display thinking <off|summary|full> | /display web <summary|full> | /display stream <stable|smooth|ultra>[/yellow]")
+    ctx.console.print("  [yellow]Usage: /display thinking <off|summary|full> | /display web <brief|summary|full> | /display answer <concise|balanced|detailed> | /display stream <stable|smooth|ultra>[/yellow]")
     return ""
 
 

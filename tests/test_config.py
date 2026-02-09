@@ -80,6 +80,7 @@ def test_display_settings_normalization_and_bounds(tmp_path, monkeypatch):
 active-model: local
 reasoning-display: invalid
 web-display: also-invalid
+answer-style: too-verbose
 stream-profile: super-fast
 web-preview-lines: -2
 web-preview-chars: 40
@@ -96,8 +97,18 @@ models:
     cfg = Config.load(project_dir=str(project_dir))
 
     assert cfg.reasoning_display == "summary"
-    assert cfg.web_display == "summary"
+    assert cfg.web_display == "brief"
+    assert cfg.answer_style == "concise"
     assert cfg.stream_profile == "ultra"
     assert cfg.web_preview_lines == 1
     assert cfg.web_preview_chars == 80
     assert cfg.web_context_chars == 20000
+
+
+def test_default_skills_include_concise_and_performance():
+    cfg = Config()
+    assert "openai-docs" in cfg.enabled_skills
+    assert "gh-address-comments" in cfg.enabled_skills
+    assert "gh-fix-ci" in cfg.enabled_skills
+    assert "playwright" in cfg.enabled_skills
+    assert "performance-tuning" in cfg.enabled_skills

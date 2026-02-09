@@ -5,6 +5,8 @@ Loading priority:
   1. Project dir .agent.conf.yml
   2. Git root .agent.conf.yml
   3. Global ~/.isrc101-agent/config.yml
+
+API keys: always merged from AGENT_HOME/.agent.conf.yml (single source of truth).
 """
 
 import os
@@ -19,14 +21,23 @@ CONFIG_DIR = Path.home() / ".isrc101-agent"
 CONFIG_FILE = CONFIG_DIR / "config.yml"
 HISTORY_FILE = CONFIG_DIR / "history.txt"
 
+# Agent install directory — single source of truth for API keys
+AGENT_HOME = Path(__file__).resolve().parent.parent
+AGENT_HOME_CONFIG = AGENT_HOME / ".agent.conf.yml"
+
 DEFAULT_ENABLED_SKILLS = [
     "python-bugfix",
+    "performance-tuning",
     "test-designer",
-    "security-review",
+    "openai-docs",
+    "gh-address-comments",
+    "gh-fix-ci",
+    "playwright",
 ]
 
 REASONING_DISPLAY_MODES = {"off", "summary", "full"}
-WEB_DISPLAY_MODES = {"summary", "full"}
+WEB_DISPLAY_MODES = {"brief", "summary", "full"}
+ANSWER_STYLE_MODES = {"concise", "balanced", "detailed"}
 STREAM_PROFILES = {"stable", "smooth", "ultra"}
 
 
@@ -99,10 +110,11 @@ class Config:
     enabled_skills: List[str] = field(default_factory=lambda: list(DEFAULT_ENABLED_SKILLS))
     web_enabled: bool = False  # /web toggle
     reasoning_display: str = "summary"
-    web_display: str = "summary"
+    web_display: str = "brief"
+    answer_style: str = "concise"
     stream_profile: str = "ultra"
-    web_preview_lines: int = 3
-    web_preview_chars: int = 360
+    web_preview_lines: int = 2
+    web_preview_chars: int = 220
     web_context_chars: int = 4000
     project_root: Optional[str] = None
     _config_source: str = ""
@@ -135,6 +147,7 @@ class Config:
             config._config_source = str(CONFIG_FILE)
             config.save()
 
+        config._merge_api_keys_from_home()
         config._apply_env()
         config.project_root = str(project_path)
         return config
@@ -221,16 +234,19 @@ class Config:
             data.get("reasoning-display", "summary")
         )
         self.web_display = self._normalize_web_display(
-            data.get("web-display", "summary")
+            data.get("web-display", "brief")
+        )
+        self.answer_style = self._normalize_answer_style(
+            data.get("answer-style", "concise")
         )
         self.stream_profile = self._normalize_stream_profile(
             data.get("stream-profile", "ultra")
         )
         self.web_preview_lines = self._coerce_positive_int(
-            data.get("web-preview-lines", 3), default=3, min_value=1, max_value=12
+            data.get("web-preview-lines", 2), default=2, min_value=1, max_value=12
         )
         self.web_preview_chars = self._coerce_positive_int(
-            data.get("web-preview-chars", 360), default=360, min_value=80, max_value=4000
+            data.get("web-preview-chars", 220), default=220, min_value=80, max_value=4000
         )
         self.web_context_chars = self._coerce_positive_int(
             data.get("web-context-chars", 4000), default=4000, min_value=500, max_value=20000
@@ -261,6 +277,23 @@ class Config:
             )
         if not self.models:
             self._add_default_presets()
+
+    def _merge_api_keys_from_home(self):
+        """Fill missing api_key from AGENT_HOME_CONFIG (single source of truth)."""
+        if not AGENT_HOME_CONFIG.exists():
+            return
+        try:
+            with open(AGENT_HOME_CONFIG) as f:
+                data = yaml.safe_load(f) or {}
+        except Exception:
+            return
+        home_models = data.get("models", {})
+        for name, preset in self.models.items():
+            if preset.api_key:
+                continue
+            home_m = home_models.get(name)
+            if home_m and home_m.get("api-key"):
+                preset.api_key = home_m["api-key"]
 
     def _apply_env(self):
         env_map = {
@@ -294,6 +327,7 @@ class Config:
             "web-enabled": self.web_enabled,
             "reasoning-display": self.reasoning_display,
             "web-display": self.web_display,
+            "answer-style": self.answer_style,
             "stream-profile": self.stream_profile,
             "web-preview-lines": self.web_preview_lines,
             "web-preview-chars": self.web_preview_chars,
@@ -353,6 +387,7 @@ class Config:
             "Web": "ON" if self.web_enabled else "OFF",
             "Thinking display": self.reasoning_display,
             "Web display": self.web_display,
+            "Answer style": self.answer_style,
             "Stream profile": self.stream_profile,
             "Project": self.project_root,
             "Config": self._config_source or "(defaults)",
@@ -367,10 +402,17 @@ class Config:
 
     @staticmethod
     def _normalize_web_display(value) -> str:
-        mode = str(value or "summary").strip().lower()
+        mode = str(value or "brief").strip().lower()
         if mode not in WEB_DISPLAY_MODES:
-            return "summary"
+            return "brief"
         return mode
+
+    @staticmethod
+    def _normalize_answer_style(value) -> str:
+        style = str(value or "concise").strip().lower()
+        if style not in ANSWER_STYLE_MODES:
+            return "concise"
+        return style
 
     @staticmethod
     def _normalize_stream_profile(value) -> str:

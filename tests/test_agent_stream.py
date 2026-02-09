@@ -166,6 +166,32 @@ def test_web_result_preview_and_context_summary(monkeypatch):
     assert "chars omitted" in printed
 
 
+def test_web_result_preview_brief_mode(monkeypatch):
+    fake_console = FakeConsole()
+    monkeypatch.setattr(agent_module, "console", fake_console)
+
+    def stream_factory(_messages, _tools):
+        yield ("done", LLMResponse(content="ok"))
+
+    agent = _build_agent(
+        stream_factory,
+        web_display="brief",
+        web_preview_lines=2,
+        web_preview_chars=120,
+        web_context_chars=4000,
+    )
+
+    web_result = "URL: https://example.com/api\n\n" + ("payload " * 80)
+    summarized = agent._summarize_web_for_context(web_result)
+    assert summarized.startswith("URL: https://example.com/api")
+    assert "context summary omitted" in summarized
+
+    agent._render_result("web_fetch", web_result, elapsed=0)
+    printed = "\n".join(str(args[0]) for args, _ in fake_console.calls if args)
+    assert "web: https://example.com/api |" in printed
+    assert "+" in printed
+
+
 def test_stream_markdown_unclosed_fence_is_safely_closed(monkeypatch):
     FakeLive.instances = []
     fake_console = FakeConsole()
@@ -262,23 +288,9 @@ def test_stream_profile_changes_refresh_thresholds(monkeypatch):
     assert ultra_updates >= stable_updates
 
 
-def test_ultra_profile_streams_plain_text_without_live(monkeypatch):
+def test_ultra_profile_uses_live_renderer(monkeypatch):
     FakeLive.instances = []
     fake_console = FakeConsole()
-
-    class FakeStream:
-        def __init__(self):
-            self.data = ""
-            self.flush_count = 0
-
-        def write(self, chunk):
-            self.data += chunk
-
-        def flush(self):
-            self.flush_count += 1
-
-    fake_stream = FakeStream()
-    fake_console.file = fake_stream
 
     monkeypatch.setattr(agent_module, "Live", FakeLive)
     monkeypatch.setattr(agent_module, "console", fake_console)
@@ -295,26 +307,14 @@ def test_ultra_profile_streams_plain_text_without_live(monkeypatch):
     response = agent._stream_response(messages=[])
 
     assert response.content == "ABC"
-    assert len(FakeLive.instances) == 0
-    assert fake_stream.data == "ABC"
-    assert fake_stream.flush_count >= 1
+    assert len(FakeLive.instances) >= 1
+    assert FakeLive.instances[-1].updates
 
 
 def test_ultra_profile_streams_reasoning_line_by_line_summary(monkeypatch):
     FakeLive.instances = []
     fake_console = FakeConsole()
 
-    class FakeStream:
-        def __init__(self):
-            self.data = ""
-
-        def write(self, chunk):
-            self.data += chunk
-
-        def flush(self):
-            pass
-
-    fake_console.file = FakeStream()
     monkeypatch.setattr(agent_module, "Live", FakeLive)
     monkeypatch.setattr(agent_module, "console", fake_console)
     monkeypatch.setattr(agent_module.time, "monotonic", lambda: 100.0)
@@ -328,8 +328,5 @@ def test_ultra_profile_streams_reasoning_line_by_line_summary(monkeypatch):
     response = agent._stream_response(messages=[])
 
     assert response.content == "done"
-    rendered = "\n".join(str(args[0]) for args, _ in fake_console.calls if args)
-    assert "thinking…" in rendered
-    assert "step one details" in rendered
-    assert "step two details" in rendered
-    assert len(FakeLive.instances) == 0
+    assert len(FakeLive.instances) >= 1
+    assert FakeLive.instances[-1].updates

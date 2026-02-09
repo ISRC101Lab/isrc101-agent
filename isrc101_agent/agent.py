@@ -30,22 +30,25 @@ TOOL_BORDER = "dim"
 class Agent:
     STREAM_PROFILES = {
         "stable": {
-            "interval": 0.09,
-            "min_chars": 28,
-            "priority_interval": 0.03,
-            "priority_chars": 8,
+            "interval": 0.08,
+            "min_chars": 20,
+            "priority_interval": 0.025,
+            "priority_chars": 6,
+            "max_silent_ms": 300,
         },
         "smooth": {
-            "interval": 0.07,
-            "min_chars": 20,
-            "priority_interval": 0.02,
-            "priority_chars": 4,
+            "interval": 0.06,
+            "min_chars": 12,
+            "priority_interval": 0.015,
+            "priority_chars": 3,
+            "max_silent_ms": 250,
         },
         "ultra": {
-            "interval": 0.05,
-            "min_chars": 16,
-            "priority_interval": 0.012,
-            "priority_chars": 2,
+            "interval": 0.04,
+            "min_chars": 4,
+            "priority_interval": 0.008,
+            "priority_chars": 1,
+            "max_silent_ms": 200,
         },
     }
 
@@ -55,6 +58,7 @@ class Agent:
                  skill_instructions: Optional[str] = None,
                  reasoning_display: str = "summary",
                  web_display: str = "summary",
+                 answer_style: str = "concise",
                  stream_profile: str = "ultra",
                  web_preview_lines: int = 3,
                  web_preview_chars: int = 360,
@@ -67,6 +71,7 @@ class Agent:
         self.skill_instructions = skill_instructions
         self.reasoning_display = reasoning_display
         self.web_display = web_display
+        self.answer_style = answer_style
         self._stream_profile = "ultra"
         self.stream_profile = stream_profile
         self.web_preview_lines = max(1, int(web_preview_lines))
@@ -108,6 +113,7 @@ class Agent:
         system = build_system_prompt(
             self._mode,
             self.skill_instructions,
+            self.answer_style,
         )
 
         for _ in range(self.max_iterations):
@@ -346,8 +352,11 @@ class Agent:
         accumulated_text = ""
         accumulated_reasoning = ""
         live: Optional[Live] = None
-        use_plain_stream = self.stream_profile == "ultra"
+        # Force unified markdown-capable rendering for all stream profiles,
+        # including ultra, to avoid raw markdown tokens leaking to terminal.
+        use_plain_stream = False
         plain_stream_started = False
+        plain_md_pending = ""
         thinking_notice_shown = False
         reasoning_stream_buffer = ""
         last_reasoning_brief = ""
@@ -359,15 +368,20 @@ class Agent:
             """Best-effort sanitize incomplete markdown for live rendering."""
             if not text:
                 return text
+            # Close unclosed code fences
             fence_count = len(re.findall(r"(?m)^```", text))
             if fence_count % 2 == 1:
-                return text + "\n```"
+                text += "\n```"
+            # Close unclosed inline markup (order matters: longest first)
+            for marker in ("***", "**", "__"):
+                if text.count(marker) % 2 == 1:
+                    text += marker
             return text
 
         def _build_panel(render_markdown: bool = False):
             """Build the display area with thinking summary when available."""
             if accumulated_text:
-                if render_markdown and accumulated_text.strip():
+                if accumulated_text.strip():
                     return Markdown(_safe_markdown(accumulated_text))
                 return Text(accumulated_text)
             elif accumulated_reasoning:
@@ -419,7 +433,30 @@ class Agent:
                 console.print()
             plain_stream_started = True
 
-        def _stream_plain_text(chunk: str) -> None:
+        def _sanitize_plain_chunk(chunk: str, *, final: bool = False) -> str:
+            nonlocal plain_md_pending
+            text = plain_md_pending + (chunk or "")
+            plain_md_pending = ""
+
+            if not final and text:
+                trailing = ""
+                while text and text[-1] in ("*", "_", "`") and len(trailing) < 2:
+                    trailing = text[-1] + trailing
+                    text = text[:-1]
+                plain_md_pending = trailing
+
+            if not text:
+                return ""
+
+            text = text.replace("```", "")
+            text = text.replace("**", "")
+            text = text.replace("__", "")
+            text = text.replace("`", "")
+            text = re.sub(r"(?m)^\\s{0,3}#{1,6}\\s+", "", text)
+            text = re.sub(r"(?m)^\\s*>\\s?", "", text)
+            return text
+
+        def _write_plain_text(chunk: str) -> None:
             if not chunk:
                 return
             _ensure_plain_stream()
@@ -430,6 +467,13 @@ class Agent:
                     stream.flush()
                 return
             console.print(chunk, end="", markup=False, highlight=False, soft_wrap=True)
+
+        def _stream_plain_text(chunk: str) -> None:
+            if not chunk:
+                return
+            cleaned = _sanitize_plain_chunk(chunk)
+            if cleaned:
+                _write_plain_text(cleaned)
 
         def _compress_reasoning_line(line: str) -> str:
             compact = " ".join(line.strip().split())
@@ -498,6 +542,10 @@ class Agent:
                 elapsed = time.monotonic() - last_render_at
                 growth = visible_chars - last_visible_chars
 
+                # Time-based fallback: always refresh after max_silent_ms
+                max_silent = self._stream_profile_setting("max_silent_ms") / 1000.0
+                silent_ready = elapsed >= max_silent and growth > 0
+
                 priority_ready = (
                     priority
                     and growth >= self._stream_profile_setting("priority_chars")
@@ -507,10 +555,10 @@ class Agent:
                     growth >= self._stream_profile_setting("min_chars")
                     or elapsed >= self._stream_profile_setting("interval")
                 )
-                if not priority_ready and not normal_ready:
+                if not silent_ready and not priority_ready and not normal_ready:
                     return
 
-            live.update(_build_panel(render_markdown=final and bool(accumulated_text) and not interrupted))
+            live.update(_build_panel())
             if hasattr(live, "refresh"):
                 live.refresh()
             last_render_at = time.monotonic()
@@ -558,6 +606,9 @@ class Agent:
                 live.stop()
             elif plain_stream_started:
                 _flush_plain_reasoning_buffer()
+                tail = _sanitize_plain_chunk("", final=True)
+                if tail:
+                    _write_plain_text(tail)
                 console.print()
 
             # Show thinking summary after main content (if reasoning was used)
@@ -643,11 +694,17 @@ class Agent:
         body = lines[start_index:]
         summary_lines: List[str] = []
         consumed = 0
-        max_lines = max(2, self.web_preview_lines + 2)
+        if self.web_display == "brief":
+            max_lines = 1
+            max_chars = min(600, max(200, self.web_context_chars // 5))
+        else:
+            max_lines = max(2, self.web_preview_lines + 2)
+            max_chars = self.web_context_chars
+
         for line in body:
-            if consumed >= self.web_context_chars:
+            if consumed >= max_chars:
                 break
-            remaining = self.web_context_chars - consumed
+            remaining = max_chars - consumed
             clipped = line[:remaining]
             summary_lines.append(clipped)
             consumed += len(clipped)
@@ -688,6 +745,17 @@ class Agent:
             url = "(unknown)"
             body_lines = lines
 
+        body_text = " ".join(body_lines).strip()
+
+        if self.web_display == "brief":
+            if not body_text:
+                return f"web: {url}"
+            snippet_limit = max(80, min(self.web_preview_chars, 180))
+            snippet = body_text[:snippet_limit].strip()
+            omitted_chars = max(0, len(body_text) - len(snippet))
+            tail = f" ... (+{omitted_chars:,} chars)" if omitted_chars > 0 else ""
+            return f"web: {url} | {snippet}{tail}"
+
         preview_lines: List[str] = []
         used_chars = 0
         for line in body_lines:
@@ -702,11 +770,10 @@ class Agent:
             preview_lines.append(clipped)
             used_chars += len(clipped)
 
-        body_text = " ".join(body_lines)
         omitted_chars = max(0, len(body_text) - used_chars)
         preview = "\n     ".join(preview_lines) if preview_lines else "(no preview)"
         tail = (
-            f"\n     ... ({omitted_chars:,} chars omitted; use web-display=full for full output)"
+            f"\n     ... ({omitted_chars:,} chars omitted)"
             if omitted_chars > 0
             else ""
         )
@@ -896,6 +963,7 @@ class Agent:
             "context_window": f"{context_window:,}",
             "thinking_display": self.reasoning_display,
             "web_display": self.web_display,
+            "answer_style": self.answer_style,
         }
 
     def compact_conversation(self) -> int:

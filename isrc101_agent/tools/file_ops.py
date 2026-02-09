@@ -235,13 +235,82 @@ class FileOps:
             n /= 1024
         return f"{n:.1f}TB"
 
-    def search_files(self, pattern: str, path: str = ".", include: Optional[str] = None) -> str:
+    def find_files(self, pattern: str, path: str = ".", max_results: int = 50) -> str:
+        """Find files by glob pattern, sorted by modification time (newest first)."""
         fp = self._resolve(path)
+        if not fp.is_dir():
+            raise FileOperationError(f"Not a directory: {path}")
+
+        matches = []
+        for p in fp.rglob(pattern):
+            if any(skip in p.parts for skip in self.SKIP_DIRS):
+                continue
+            if not p.is_file():
+                continue
+            try:
+                rel = p.relative_to(self.project_root)
+                mtime = p.stat().st_mtime
+                matches.append((str(rel), mtime))
+            except (ValueError, OSError):
+                continue
+
+        matches.sort(key=lambda x: x[1], reverse=True)
+        total = len(matches)
+        shown = matches[:max_results]
+
+        if not shown:
+            return f"No files matching '{pattern}'"
+
+        lines = [str(m[0]) for m in shown]
+        result = f"Found {total} file(s)"
+        if total > max_results:
+            result += f" (showing {max_results})"
+        result += f":\n" + "\n".join(lines)
+        return result
+
+    def find_symbol(self, name: str, kind: str = "any", path: str = ".") -> str:
+        """Search for function/class/variable definitions by name."""
+        fp = self._resolve(path)
+        patterns = {
+            "function": r"(def|function|func|fn|async\s+def|async\s+function)\s+" + name,
+            "class": r"(class|struct|interface|enum)\s+" + name,
+            "any": r"(def|function|func|fn|async\s+def|async\s+function|class|struct|interface|enum|const|let|var)\s+" + name,
+        }
+        pat = patterns.get(kind, patterns["any"])
+
+        if self._has_ripgrep():
+            cmd = ["rg", "-n", "-H", "--color=never", "--no-heading", "-e", pat]
+            for d in self.SKIP_DIRS:
+                cmd.extend(["-g", f"!{d}/"])
+            cmd.append(str(fp))
+        else:
+            cmd = ["grep", "-rnHP", "--color=never", "-I", pat]
+            for d in self.SKIP_DIRS:
+                cmd.extend(["--exclude-dir", d])
+            cmd.append(str(fp))
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
+                                    cwd=str(self.project_root))
+        except subprocess.TimeoutExpired:
+            return "Symbol search timed out."
+
+        if result.returncode == 1:
+            return f"No definitions found for: {name}"
+        if result.returncode != 0:
+            return f"Search error: {result.stderr.strip()}"
+
+        return self._format_search_output(result.stdout)
+
+    def search_files(self, pattern: str, path: str = ".", include: Optional[str] = None,
+                     context_lines: int = 0, max_results: int = 80) -> str:
+        fp = self._resolve(path)
+        ctx = max(0, min(context_lines, 5))  # cap at 5
 
         # Try ripgrep first (much faster), fallback to grep
         if self._has_ripgrep():
-            return self._search_with_rg(pattern, fp, include)
-        return self._search_with_grep(pattern, fp, include)
+            return self._search_with_rg(pattern, fp, include, ctx, max_results)
+        return self._search_with_grep(pattern, fp, include, ctx, max_results)
 
     def _has_ripgrep(self) -> bool:
         """Check if ripgrep is available."""
@@ -251,9 +320,13 @@ class FileOps:
         except (FileNotFoundError, subprocess.TimeoutExpired):
             return False
 
-    def _search_with_rg(self, pattern: str, fp: Path, include: Optional[str]) -> str:
+    def _search_with_rg(self, pattern: str, fp: Path, include: Optional[str],
+                        context_lines: int = 0, max_results: int = 80) -> str:
         """Search using ripgrep (faster)."""
         cmd = ["rg", "-n", "-H", "--color=never", "--no-heading"]
+
+        if context_lines > 0:
+            cmd.extend(["-C", str(context_lines)])
 
         # File type filter
         if include:
@@ -278,9 +351,13 @@ class FileOps:
 
         return self._format_search_output(result.stdout)
 
-    def _search_with_grep(self, pattern: str, fp: Path, include: Optional[str]) -> str:
+    def _search_with_grep(self, pattern: str, fp: Path, include: Optional[str],
+                          context_lines: int = 0, max_results: int = 80) -> str:
         """Search using grep (fallback)."""
         cmd = ["grep", "-rnH", "--color=never", "-I"]
+
+        if context_lines > 0:
+            cmd.extend(["-C", str(context_lines)])
 
         if include:
             cmd.extend(["--include", include])
@@ -303,19 +380,41 @@ class FileOps:
 
         return self._format_search_output(result.stdout)
 
-    def _format_search_output(self, stdout: str) -> str:
-        """Format search output with truncation."""
+    def _format_search_output(self, stdout: str, max_results: int = 80) -> str:
+        """Format search output grouped by file with truncation."""
         output = stdout.replace(str(self.project_root) + "/", "")
         raw_lines = output.strip().splitlines()
         if not raw_lines:
             return "Found 0 match(es):"
 
-        lines = raw_lines
+        # Group lines by file for cleaner output
+        groups: dict = {}
+        for line in raw_lines:
+            # rg/grep format: file:line:content or file-line-content (context)
+            sep_idx = line.find(":")
+            if sep_idx > 0:
+                fname = line[:sep_idx]
+                groups.setdefault(fname, []).append(line)
+            else:
+                groups.setdefault("(other)", []).append(line)
 
-        output = "\n".join(lines)
-        if len(lines) > 80:
-            output = "\n".join(lines[:80]) + f"\n... ({len(lines) - 80} more)"
-        return f"Found {len(lines)} match(es):\n{output}"
+        total_matches = len(raw_lines)
+        result_lines = []
+        shown = 0
+        for fname, file_lines in groups.items():
+            if shown >= max_results:
+                break
+            result_lines.append(f"\n── {fname} ({len(file_lines)} matches) ──")
+            for fl in file_lines:
+                if shown >= max_results:
+                    break
+                result_lines.append(fl)
+                shown += 1
+
+        header = f"Found {total_matches} match(es) in {len(groups)} file(s)"
+        if total_matches > max_results:
+            header += f" (showing {max_results})"
+        return header + ":" + "\n".join(result_lines)
 
     # ── Image support ──────────────────────────────
     IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
