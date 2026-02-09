@@ -1,28 +1,46 @@
 ---
 name: python-bugfix
-description: "Diagnose and fix Python runtime/import/type/logic failures with minimal diffs and reproducible verification. Use when tasks mention Traceback, failing scripts/tests, exceptions, regressions, or broken CLI behavior."
+description: "Systematic Python debugging: reproduce, isolate, fix, verify. Use when users report tracebacks, failing tests, exceptions, import errors, or unexpected behavior."
 ---
 
 # Python Bugfix
 
-## Workflow
+## When to Activate
 
-1. 复现问题：先运行最小复现命令，记录报错栈、输入和环境。
-2. 定位根因：优先看第一处真实异常，而不是最后一层包装错误。
-3. 最小修复：只改导致失败的逻辑，避免顺手重构。
-4. 回归验证：至少验证复现场景，再验证一个相邻路径。
-5. 交付说明：明确根因、改动点、验证命令、残留风险。
+- User shares a traceback or error message
+- User says something is "broken", "failing", or "not working"
+- Test failures, import errors, type errors, runtime exceptions
 
-## Bugfix Rules
+## Debugging Workflow
 
-- 不要用“吞异常”掩盖错误（避免裸 `except:`）。
-- 优先修复输入校验、状态一致性、边界条件和空值分支。
-- 修改接口行为时，保持向后兼容或明确给出迁移说明。
-- 涉及配置读取时，给出清晰错误信息与修复提示。
+1. **Reproduce**: Run the exact command that fails. Record the full traceback.
+2. **Read the real error**: Look at the FIRST exception in the chain, not the last wrapper.
+3. **Isolate**: Narrow down to the smallest code path that triggers the bug.
+4. **Understand before fixing**: Read the surrounding code. Why was it written this way?
+5. **Minimal fix**: Change only what's broken. Don't refactor adjacent code.
+6. **Verify**: Run the failing command again. Run related tests.
+
+## Common Python Bug Patterns
+
+| Pattern | Symptom | Fix |
+|---------|---------|-----|
+| Missing `None` check | `AttributeError: 'NoneType'` | Add guard or fix upstream |
+| Mutable default arg | State leaks between calls | Use `None` + `if arg is None` |
+| Import cycle | `ImportError` / `partially initialized` | Move import to function scope or restructure |
+| Path issues | `FileNotFoundError` | Use `Path.resolve()`, check `cwd` |
+| Encoding | `UnicodeDecodeError` | Specify `encoding="utf-8"` explicitly |
+| Dict key missing | `KeyError` | Use `.get()` or validate input |
+
+## Rules
+
+- Never use bare `except:` — always catch specific exceptions.
+- Don't add defensive code everywhere; fix the actual root cause.
+- If the fix changes public API behavior, warn the user.
+- Include the root cause in your explanation, not just "I changed X to Y".
 
 ## Verification Checklist
 
-- 复现命令在修复前失败、修复后通过。
-- 与改动相关的单测或脚本已运行。
-- 未引入新的 lint/语法错误。
-- 输出对用户可读，包含下一步建议。
+- Failing command now passes.
+- Related tests still pass.
+- No new lint/syntax errors introduced.
+- Output is readable with clear next steps.

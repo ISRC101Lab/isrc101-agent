@@ -26,13 +26,10 @@ AGENT_HOME = Path(__file__).resolve().parent.parent
 AGENT_HOME_CONFIG = AGENT_HOME / ".agent.conf.yml"
 
 DEFAULT_ENABLED_SKILLS = [
+    "git-workflow",
+    "code-review",
+    "smart-refactor",
     "python-bugfix",
-    "performance-tuning",
-    "test-designer",
-    "openai-docs",
-    "gh-address-comments",
-    "gh-fix-ci",
-    "playwright",
 ]
 
 REASONING_DISPLAY_MODES = {"off", "summary", "full"}
