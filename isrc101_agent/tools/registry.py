@@ -202,7 +202,7 @@ class ToolRegistry:
         if not self._web_enabled:
             return "Web access is disabled. Use /web to enable it."
         if not self.web.search_available:
-            return "No search backend available. Install: pip install duckduckgo-search"
+            return "No search backend available. Install: pip install ddgs"
         return self.web.search(query, max_results)
 
     # ── Public API ──
