@@ -52,6 +52,37 @@ Python >= 3.10 | litellm · rich · click · prompt_toolkit · requests · ddgs 
 
 可选：`pip install isrc101-agent[tavily]`（Tavily AI 搜索）
 
+## 架构
+
+```
+isrc101_agent/
+├── main.py            # CLI 入口 (click)
+├── agent.py           # 对话循环 + tool call 调度
+├── llm.py             # LLM 适配层 (litellm) + system prompt
+├── config.py          # 配置加载（YAML + 环境变量）
+├── command_router.py  # / 命令路由（dict dispatch）
+├── skills.py          # 技能发现与 prompt 注入
+├── ui.py              # 终端 UI（prompt_toolkit + rich）
+└── tools/
+    ├── registry.py    # 工具注册表（dict-based dispatch）
+    ├── file_ops.py    # 文件操作（read/write/str_replace）
+    ├── git_ops.py     # Git 操作（auto-commit）
+    └── web_ops.py     # 联网（Jina Reader + DDG/Tavily）
+```
+
+- **工具调度**: dict 查找替代 match/case，O(1) 分发
+- **模式隔离**: ask/architect 模式自动过滤写入工具
+- **Web 策略**: system prompt 引导 LLM 先搜后 fetch，严格基于抓取内容回复
+- **流式输出**: 支持 ultra/fast/normal 三档 stream profile
+
+## 未来展望
+
+- [ ] **多轮 tool call**: 支持单轮返回多个 tool call（parallel function calling）
+- [ ] **上下文压缩**: 长对话自动摘要，降低 token 消耗
+- [ ] **MCP 协议**: 接入 Model Context Protocol，扩展外部工具生态
+- [ ] **RAG 集成**: 项目级向量索引，大型代码库精准检索
+- [ ] **多模型协作**: reasoner 规划 + chat 执行的双模型工作流
+
 ## 许可证
 
 MIT License
