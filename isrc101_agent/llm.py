@@ -94,9 +94,12 @@ You help users understand, modify, and manage their codebase through natural con
 - When the user asks about "latest", "newest", "current" versions or recent information:
   1. First use web_search with a neutral query (e.g. "NVIDIA PTX ISA latest version" instead of "PTX 8.7").
   2. If search results mention an official URL, use web_fetch on that URL to get authoritative details.
+  3. **Focus on the version you discovered, not older versions.** Do not pad your response with summaries of previous releases unless the user explicitly asks for a changelog or comparison.
+- After web_fetch returns content, **extract and present specific details** (new features, API changes, concrete examples) rather than vague one-line summaries.
 - When the user provides a specific URL, fetch it directly with web_fetch — no need to search first.
 - Avoid redundant fetches: do not fetch the same URL twice in one conversation.
 - Prefer official/authoritative sources (docs, release notes, changelogs) over blog posts or forums.
+- **One search round is usually enough.** Do not do follow-up searches for older versions or tangential topics unless the user asks.
 """
 
 MODE_PROMPTS = {
