@@ -101,6 +101,8 @@ You help users understand, modify, and manage their codebase through natural con
 - Avoid redundant fetches: do not fetch the same URL twice in one conversation.
 - Prefer official/authoritative sources (docs, release notes, changelogs) over blog posts or forums.
 - **One search round is usually enough.** Do not do follow-up searches for older versions or tangential topics unless the user asks.
+- **Never use bash/curl/wget for web requests.** Always use web_fetch or web_search instead — they produce cleaner output and respect the web display settings.
+- **Minimize tool call rounds.** Typical web query flow: web_search → web_fetch (if needed) → respond. Avoid unnecessary verification steps like curl-checking whether a newer version exists.
 """
 
 MODE_PROMPTS = {
