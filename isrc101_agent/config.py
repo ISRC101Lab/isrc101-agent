@@ -106,6 +106,7 @@ class Config:
     skills_dir: str = "skills"
     enabled_skills: List[str] = field(default_factory=lambda: list(DEFAULT_ENABLED_SKILLS))
     web_enabled: bool = False  # /web toggle
+    tavily_api_key: Optional[str] = None  # optional: TAVILY_API_KEY env var
     reasoning_display: str = "summary"
     web_display: str = "brief"
     answer_style: str = "concise"
@@ -305,6 +306,9 @@ class Config:
                     setattr(self, attr, conv(val))
                 except (ValueError, TypeError):
                     pass
+        # Tavily API key (optional, for web search upgrade)
+        if not self.tavily_api_key:
+            self.tavily_api_key = os.environ.get("TAVILY_API_KEY")
 
     def save(self, filepath: Optional[str] = None):
         target = Path(filepath) if filepath else (

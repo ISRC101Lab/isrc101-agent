@@ -1,9 +1,14 @@
-"""Web operations: fetch URLs with smart content extraction."""
+"""Web operations: Jina Reader (fetch) + DuckDuckGo/Tavily (search).
+
+Jina Reader: prepend https://r.jina.ai/ to any URL → clean markdown, no API key.
+DuckDuckGo: free web search, no API key (default).
+Tavily: AI-optimized search, optional upgrade when API key is set.
+"""
 
 import re
+from typing import Optional
 from urllib.parse import urlparse
 
-# Optional dependencies — graceful degradation
 try:
     import requests
     HAS_REQUESTS = True
@@ -11,129 +16,148 @@ except ImportError:
     HAS_REQUESTS = False
 
 try:
-    import trafilatura
-    HAS_TRAFILATURA = True
+    from ddgs import DDGS
+    HAS_DDG = True
 except ImportError:
-    HAS_TRAFILATURA = False
+    try:
+        from duckduckgo_search import DDGS
+        HAS_DDG = True
+    except ImportError:
+        HAS_DDG = False
 
 try:
-    import html2text as _h2t
-    HAS_HTML2TEXT = True
+    from tavily import TavilyClient
+    HAS_TAVILY = True
 except ImportError:
-    HAS_HTML2TEXT = False
+    HAS_TAVILY = False
 
 
 class WebOpsError(Exception):
     pass
 
 
-def _make_html2text():
-    """Configure html2text for clean markdown output."""
-    h = _h2t.HTML2Text()
-    h.ignore_links = False
-    h.ignore_images = True
-    h.ignore_emphasis = False
-    h.body_width = 0          # no line wrapping
-    h.skip_internal_links = True
-    h.inline_links = True
-    h.protect_links = True
-    h.unicode_snob = True
-    return h
-
-
 class WebOps:
-    """Web fetch with trafilatura → html2text → regex fallback chain."""
+    """Web fetch via Jina Reader, search via DuckDuckGo (free) or Tavily (optional)."""
 
-    TIMEOUT = 15
-    MAX_CONTENT_LENGTH = 100000  # 100KB text limit
+    JINA_PREFIX = "https://r.jina.ai/"
+    TIMEOUT = 30
+    MAX_CONTENT_LENGTH = 100000
 
-    def __init__(self):
+    def __init__(self, tavily_api_key: Optional[str] = None):
         self._session = None
-        self._h2t = _make_html2text() if HAS_HTML2TEXT else None
+        self._tavily = None
+        if tavily_api_key and HAS_TAVILY:
+            self._tavily = TavilyClient(api_key=tavily_api_key)
 
     @property
     def available(self) -> bool:
         return HAS_REQUESTS
 
+    @property
+    def search_available(self) -> bool:
+        return HAS_DDG or self._tavily is not None
+
     def _get_session(self):
         if self._session is None and HAS_REQUESTS:
             self._session = requests.Session()
             self._session.headers.update({
-                "User-Agent": (
-                    "Mozilla/5.0 (compatible; isrc101-agent/1.0; "
-                    "+https://github.com/ISRC101Lab/isrc101-agent)"
-                ),
-                "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
+                "Accept": "text/markdown, text/plain, */*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8",
             })
         return self._session
 
+    # ── URL Fetch (Jina Reader) ──
+
     def fetch(self, url: str) -> str:
-        """Fetch URL and return clean markdown content."""
+        """Fetch URL via Jina Reader → clean markdown."""
         if not HAS_REQUESTS:
-            raise WebOpsError("requests not installed. Run: pip install requests")
+            raise WebOpsError("requests not installed")
 
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https"):
             raise WebOpsError(f"Invalid URL scheme: {parsed.scheme}")
 
+        jina_url = self.JINA_PREFIX + url
         try:
-            resp = self._get_session().get(url, timeout=self.TIMEOUT)
+            resp = self._get_session().get(jina_url, timeout=self.TIMEOUT)
             resp.raise_for_status()
         except requests.RequestException as e:
-            raise WebOpsError(f"Fetch failed: {e}")
+            raise WebOpsError(f"Jina fetch failed: {e}")
 
-        content_type = resp.headers.get("content-type", "")
-
-        if "text/html" in content_type:
-            return self._extract_html(resp.text, url)
-
-        if "text/plain" in content_type or "application/json" in content_type:
-            return self._truncate(resp.text, url)
-
-        raise WebOpsError(f"Unsupported content type: {content_type}")
-
-    def _extract_html(self, html: str, url: str) -> str:
-        """Extract clean text from HTML using best available method."""
-        text = None
-
-        # 1) trafilatura — best for article/doc pages
-        if HAS_TRAFILATURA and text is None:
-            text = trafilatura.extract(
-                html,
-                include_links=True,
-                include_formatting=True,
-                include_tables=True,
-                output_format="markdown",
-                favor_precision=False,
-                favor_recall=True,
-            )
-
-        # 2) html2text — good general HTML→Markdown
-        if HAS_HTML2TEXT and not text:
-            text = self._h2t.handle(html).strip()
-
-        # 3) regex fallback
-        if not text:
-            text = self._regex_extract(html)
-
-        # Clean up excessive blank lines
-        text = re.sub(r"\n{3,}", "\n\n", text).strip()
-
+        text = resp.text.strip()
+        text = re.sub(r"\n{3,}", "\n\n", text)
         return self._truncate(text, url)
 
+    # ── Web Search ──
+
+    def search(self, query: str, max_results: int = 5) -> str:
+        """Search web: Tavily (if key set) → DuckDuckGo (free default)."""
+        if self._tavily:
+            return self._search_tavily(query, max_results)
+        if HAS_DDG:
+            return self._search_ddg(query, max_results)
+        raise WebOpsError("No search backend. Install: pip install ddgs")
+
+    def _search_ddg(self, query: str, max_results: int) -> str:
+        """DuckDuckGo search — free, no API key."""
+        try:
+            ddgs = DDGS()
+            results = list(ddgs.text(query, max_results=max_results))
+        except Exception as e:
+            raise WebOpsError(f"DuckDuckGo search failed: {e}")
+        return self._format_ddg_results(query, results)
+
+    def _search_tavily(self, query: str, max_results: int) -> str:
+        """Tavily search — AI-optimized, needs API key."""
+        try:
+            result = self._tavily.search(
+                query=query, max_results=max_results, include_answer=True,
+            )
+        except Exception as e:
+            raise WebOpsError(f"Tavily search failed: {e}")
+        return self._format_tavily_results(query, result)
+
+    # ── Formatters ──
+
     @staticmethod
-    def _regex_extract(html: str) -> str:
-        """Last-resort regex HTML stripping."""
-        text = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL)
-        text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL)
-        text = re.sub(r"<[^>]+>", " ", text)
-        text = re.sub(r"[ \t]+", " ", text)
-        text = re.sub(r"\n\s*\n", "\n\n", text)
-        return text.strip()
+    def _format_ddg_results(query: str, results: list) -> str:
+        lines = [f"Search: {query}\n"]
+        if not results:
+            lines.append("No results found.")
+            return "\n".join(lines)
+        for i, r in enumerate(results, 1):
+            title = r.get("title", "")
+            url = r.get("href", "")
+            body = r.get("body", "")
+            if len(body) > 300:
+                body = body[:300] + "..."
+            lines.append(f"{i}. [{title}]({url})")
+            if body:
+                lines.append(f"   {body}\n")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_tavily_results(query: str, result: dict) -> str:
+        lines = [f"Search: {query}\n"]
+        answer = result.get("answer")
+        if answer:
+            lines.append(f"**Summary:** {answer}\n")
+        for i, r in enumerate(result.get("results", []), 1):
+            title = r.get("title", "")
+            url = r.get("url", "")
+            snippet = r.get("content", "")
+            if len(snippet) > 300:
+                snippet = snippet[:300] + "..."
+            lines.append(f"{i}. [{title}]({url})")
+            if snippet:
+                lines.append(f"   {snippet}\n")
+        if not result.get("results") and not answer:
+            lines.append("No results found.")
+        return "\n".join(lines)
+
+    # ── Helpers ──
 
     def _truncate(self, text: str, url: str) -> str:
-        """Add URL header and truncate if needed."""
         if len(text) > self.MAX_CONTENT_LENGTH:
             text = text[:self.MAX_CONTENT_LENGTH] + "\n\n... (truncated)"
         return f"URL: {url}\n\n{text}"

@@ -51,6 +51,11 @@ isrc run
 - **更窄行高**: `/model` 与 `/skills` 选择器使用统一紧凑行距与对齐规则
 - **选择器一致性**: `/model` 与 `/skills` 共享同一套无框交互与键位
 
+### 🌐 联网能力
+- **网页抓取**: 通过 [Jina Reader](https://jina.ai/reader/) 将任意 URL 转为干净 Markdown，免费无需 API Key
+- **网页搜索**: 默认使用 [DuckDuckGo](https://duckduckgo.com/)（免费），可选升级 [Tavily](https://tavily.com/)（AI 优化搜索）
+- **按需开启**: `/web on` 启用，`/web off` 关闭，不影响离线使用
+
 ### ⚙️ 灵活配置
 - **项目级配置**: `.agent.conf.yml` 覆盖全局设置
 - **技能系统**: `skills/*/SKILL.md` 提供可插拔专业工作流
@@ -79,7 +84,7 @@ isrc run
 
 # 系统命令
 /config             显示当前配置
-/web                切换联网抓取开关（web_fetch）
+/web                切换联网开关（web_fetch + web_search）
 /web on brief       开启联网并使用极简显示（推荐）
 /web on summary     开启联网并使用摘要显示
 /web on full        开启联网并显示完整抓取内容
@@ -128,23 +133,17 @@ isrc run
 ```yaml
 skills-dir: skills
 enabled-skills:
+  - git-workflow
+  - code-review
+  - smart-refactor
   - python-bugfix
-  - performance-tuning
-  - test-designer
-  - openai-docs
-  - gh-address-comments
-  - gh-fix-ci
-  - playwright
 ```
 
-内置高价值技能（`./skills`，优先 OpenAI 官方）：
+内置高价值技能（`./skills`）：
+- `git-workflow`: 原子提交、分支策略、冲突解决、PR 准备
+- `code-review`: 四轮审查（正确性、安全性、可维护性、性能）
+- `smart-refactor`: 安全增量重构与验证闭环
 - `python-bugfix`: Python 报错定位与最小修复
-- `test-designer`: 高信号测试设计与回归用例
-- `performance-tuning`: 性能剖析与优化闭环
-- `openai-docs`: OpenAI 官方文档检索与权威引用（实时）
-- `gh-address-comments`: 自动化处理 PR review comments 并回填修复
-- `gh-fix-ci`: 定位并修复 GitHub Actions 失败项
-- `playwright`: 真实浏览器自动化验证与调试
 
 ### 自定义配置
 编辑 `.agent.conf.yml` 文件可以：
@@ -216,8 +215,11 @@ vim ./.agent.conf.yml
   - `rich`: 终端美化输出
   - `click`: 命令行界面
   - `prompt_toolkit`: 交互式提示
-  - `gitpython`: Git 操作集成
+  - `requests`: HTTP 请求
+  - `ddgs`: DuckDuckGo 搜索（免费）
   - `python-dotenv`: 环境变量管理
+- **可选依赖**:
+  - `tavily-python`: Tavily AI 搜索（需 API Key，`pip install isrc101-agent[tavily]`）
 
 ## 许可证
 

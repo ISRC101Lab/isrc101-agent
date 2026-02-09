@@ -43,11 +43,12 @@ _I = lambda desc, **kw: {"type": "integer", "description": desc, **kw}
 
 class ToolRegistry:
     def __init__(self, project_root: str, blocked_commands: list = None,
-                 command_timeout: int = 30, commit_prefix: str = "isrc101: "):
+                 command_timeout: int = 30, commit_prefix: str = "isrc101: ",
+                 tavily_api_key: str = None):
         self.file_ops = FileOps(project_root)
         self.shell = ShellExecutor(project_root, blocked_commands, command_timeout)
         self.git = GitOps(project_root, commit_prefix=commit_prefix)
-        self.web = WebOps()
+        self.web = WebOps(tavily_api_key=tavily_api_key)
         self._web_enabled = False
         self.mode = "code"
         self._tools: Dict[str, _ToolEntry] = {}
@@ -170,9 +171,19 @@ class ToolRegistry:
         self._tools["web_fetch"] = T(
             handler=lambda **a: self._handle_web_fetch(a["url"]),
             schema=S("web_fetch",
-                     "Fetch a URL and return its text content. Available only when /web is ON.",
+                     "Fetch a URL and return its markdown content via Jina Reader. Available only when /web is ON.",
                      {"url": _S("URL to fetch (http/https)")},
                      ["url"]),
+            mode="all",
+        )
+        self._tools["web_search"] = T(
+            handler=lambda **a: self._handle_web_search(a["query"], a.get("max_results", 5)),
+            schema=S("web_search",
+                     "Search the web and return results. Uses DuckDuckGo (free) by default, "
+                     "Tavily when API key is configured. Available only when /web is ON.",
+                     {"query": _S("Search query"),
+                      "max_results": _I("Max results (default 5)", default=5)},
+                     ["query"]),
             mode="all",
         )
 
@@ -186,6 +197,13 @@ class ToolRegistry:
         if not self._web_enabled:
             return "Web access is disabled. Use /web to enable it."
         return self.web.fetch(url)
+
+    def _handle_web_search(self, query: str, max_results: int = 5) -> str:
+        if not self._web_enabled:
+            return "Web access is disabled. Use /web to enable it."
+        if not self.web.search_available:
+            return "No search backend available. Install: pip install duckduckgo-search"
+        return self.web.search(query, max_results)
 
     # ── Public API ──
 
@@ -211,7 +229,7 @@ class ToolRegistry:
             if self.mode in ("ask", "architect") and entry.mode == "code":
                 continue
             # Web filtering
-            if not self._web_enabled and name == "web_fetch":
+            if not self._web_enabled and name in ("web_fetch", "web_search"):
                 continue
             result.append(entry.schema)
         return result
