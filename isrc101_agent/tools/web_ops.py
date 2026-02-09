@@ -41,7 +41,7 @@ class WebOps:
 
     JINA_PREFIX = "https://r.jina.ai/"
     TIMEOUT = 30
-    MAX_CONTENT_LENGTH = 100000
+    MAX_CONTENT_LENGTH = 20000
 
     def __init__(self, tavily_api_key: Optional[str] = None):
         self._session = None
@@ -63,6 +63,8 @@ class WebOps:
             self._session.headers.update({
                 "Accept": "text/markdown, text/plain, */*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8",
+                "X-Return-Format": "markdown",
+                "X-With-Links-Summary": "true",
             })
         return self._session
 
@@ -129,8 +131,8 @@ class WebOps:
             title = r.get("title", "")
             url = r.get("href", "")
             body = r.get("body", "")
-            if len(body) > 300:
-                body = body[:300] + "..."
+            if len(body) > 200:
+                body = body[:200] + "..."
             lines.append(f"{i}. [{title}]({url})")
             if body:
                 lines.append(f"   {body}\n")
@@ -146,8 +148,8 @@ class WebOps:
             title = r.get("title", "")
             url = r.get("url", "")
             snippet = r.get("content", "")
-            if len(snippet) > 300:
-                snippet = snippet[:300] + "..."
+            if len(snippet) > 200:
+                snippet = snippet[:200] + "..."
             lines.append(f"{i}. [{title}]({url})")
             if snippet:
                 lines.append(f"   {snippet}\n")
