@@ -50,7 +50,7 @@ class ToolRegistry:
         self.git = GitOps(project_root, commit_prefix=commit_prefix)
         self.web = WebOps(tavily_api_key=tavily_api_key)
         self._web_enabled = False
-        self.mode = "code"
+        self.mode = "agent"
         self._tools: Dict[str, _ToolEntry] = {}
         self._register_tools()
 
@@ -177,12 +177,13 @@ class ToolRegistry:
             mode="all",
         )
         self._tools["web_search"] = T(
-            handler=lambda **a: self._handle_web_search(a["query"], a.get("max_results", 5)),
+            handler=lambda **a: self._handle_web_search(a["query"], a.get("max_results", 5), a.get("domains")),
             schema=S("web_search",
                      "Search the web and return results. Uses DuckDuckGo (free) by default, "
                      "Tavily when API key is configured. Available only when /web is ON.",
                      {"query": _S("Search query"),
-                      "max_results": _I("Max results (default 5)", default=5)},
+                      "max_results": _I("Max results (default 5)", default=5),
+                      "domains": _S("Optional comma-separated domains for filtering")},
                      ["query"]),
             mode="all",
         )
@@ -198,12 +199,17 @@ class ToolRegistry:
             return "Web access is disabled. Use /web to enable it."
         return self.web.fetch(url)
 
-    def _handle_web_search(self, query: str, max_results: int = 5) -> str:
+    def _handle_web_search(self, query: str, max_results: int = 5, domains=None) -> str:
         if not self._web_enabled:
             return "Web access is disabled. Use /web to enable it."
         if not self.web.search_available:
             return "No search backend available. Install: pip install ddgs"
-        return self.web.search(query, max_results)
+        domain_list = None
+        if isinstance(domains, str):
+            domain_list = [item.strip() for item in domains.split(",") if item.strip()]
+        elif isinstance(domains, list):
+            domain_list = [str(item).strip() for item in domains if str(item).strip()]
+        return self.web.search(query, max_results, domains=domain_list)
 
     # ── Public API ──
 
@@ -226,7 +232,7 @@ class ToolRegistry:
         result = []
         for name, entry in self._tools.items():
             # Mode filtering
-            if self.mode in ("ask", "architect") and entry.mode == "code":
+            if self.mode == "ask" and entry.mode == "code":
                 continue
             # Web filtering
             if not self._web_enabled and name in ("web_fetch", "web_search"):
@@ -241,7 +247,7 @@ class ToolRegistry:
             return f"Unknown tool: {tool_name}"
 
         # Mode check
-        if self.mode in ("ask", "architect") and entry.mode == "code":
+        if self.mode == "ask" and entry.mode == "code":
             return f"Tool '{tool_name}' is disabled in mode '{self.mode}'."
 
         try:
@@ -257,7 +263,21 @@ class ToolRegistry:
 
     WRITE_TOOLS = {"create_file", "write_file", "str_replace", "delete_file"}
     CONFIRM_TOOLS = {"bash"}
+    PARALLEL_SAFE_TOOLS = {
+        "read_file",
+        "list_directory",
+        "search_files",
+        "find_files",
+        "find_symbol",
+        "read_image",
+        "web_fetch",
+        "web_search",
+    }
 
     @classmethod
     def needs_confirmation(cls, tool_name: str) -> bool:
         return tool_name in cls.CONFIRM_TOOLS
+
+    @classmethod
+    def can_parallelize(cls, tool_name: str) -> bool:
+        return tool_name in cls.PARALLEL_SAFE_TOOLS

@@ -3,13 +3,16 @@
 import json
 import re
 import time
-from typing import List, Dict, Any, Optional
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional, Tuple
 
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
 from rich.live import Live
+from rich.status import Status
 
 from .llm import LLMAdapter, LLMResponse, build_system_prompt
 from .tools import ToolRegistry
@@ -19,7 +22,7 @@ from .tokenizer import estimate_tokens, estimate_message_tokens
 _log = get_logger(__name__)
 console = Console()
 
-__all__ = ["Agent"]
+__all__ = ["Agent", "Plan", "PlanStep"]
 
 # ── Visual theme ───────────────────────────────────
 AGENT_BORDER = "cyan"
@@ -27,7 +30,30 @@ AGENT_LABEL = "[bold cyan]isrc101[/bold cyan]"
 TOOL_BORDER = "dim"
 
 
+# ── Plan data structures ──────────────────────────
+@dataclass
+class PlanStep:
+    index: int
+    action: str       # "create", "edit", "delete", "run", "read"
+    target: str       # file path or command
+    description: str
+    status: str = "pending"  # pending | executing | done | failed | skipped
+
+
+@dataclass
+class Plan:
+    title: str
+    steps: List[PlanStep] = field(default_factory=list)
+    approved: bool = False
+
+
 class Agent:
+    GROUNDED_WEB_MODES = {"off", "strict"}
+    GROUNDED_CITATION_MODES = {"sources_only", "inline"}
+    GROUNDING_OPEN = "<grounding_json>"
+    GROUNDING_CLOSE = "</grounding_json>"
+    MAX_WEB_EVIDENCE_DOCS = 24
+
     STREAM_PROFILES = {
         "stable": {
             "interval": 0.08,
@@ -53,16 +79,21 @@ class Agent:
     }
 
     def __init__(self, llm: LLMAdapter, tools: ToolRegistry, max_iterations: int = 30,
-                 auto_confirm: bool = False, chat_mode: str = "code",
+                 auto_confirm: bool = False, chat_mode: str = "agent",
                  auto_commit: bool = True,
                  skill_instructions: Optional[str] = None,
                  reasoning_display: str = "summary",
                  web_display: str = "summary",
                  answer_style: str = "concise",
                  stream_profile: str = "ultra",
+                 grounded_web_mode: str = "strict",
+                 grounded_retry: int = 1,
+                 grounded_visible_citations: str = "sources_only",
+                 grounded_context_chars: int = 8000,
                  web_preview_lines: int = 3,
                  web_preview_chars: int = 360,
-                 web_context_chars: int = 4000):
+                 web_context_chars: int = 4000,
+                 tool_parallelism: int = 4):
         self.llm = llm
         self.tools = tools
         self.max_iterations = max_iterations
@@ -74,24 +105,50 @@ class Agent:
         self.answer_style = answer_style
         self._stream_profile = "ultra"
         self.stream_profile = stream_profile
+        grounded_mode = str(grounded_web_mode or "strict").strip().lower()
+        if grounded_mode not in self.GROUNDED_WEB_MODES:
+            grounded_mode = "strict"
+        self.grounded_web_mode = grounded_mode
+        self.grounded_retry = max(0, int(grounded_retry))
+        citation_mode = str(grounded_visible_citations or "sources_only").strip().lower()
+        if citation_mode not in self.GROUNDED_CITATION_MODES:
+            citation_mode = "sources_only"
+        self.grounded_visible_citations = citation_mode
+        self.grounded_context_chars = max(800, int(grounded_context_chars))
         self.web_preview_lines = max(1, int(web_preview_lines))
         self.web_preview_chars = max(80, int(web_preview_chars))
         self.web_context_chars = max(500, int(web_context_chars))
-        self._mode = chat_mode
-        self.tools.mode = chat_mode
+        self.tool_parallelism = max(1, int(tool_parallelism))
+        normalized_mode = self._normalize_mode(chat_mode)
+        self._mode = normalized_mode
+        self.tools.mode = normalized_mode
         self.conversation: List[Dict[str, Any]] = []
         self.total_tokens = 0
         self._files_modified = False
+        self.current_plan: Optional[Plan] = None
+        self._web_evidence_store: Dict[str, str] = {}
+        self._web_evidence_order: List[str] = []
+        self._turn_web_used = False
+        self._turn_web_sources: set[str] = set()
 
     @property
     def mode(self):
         return self._mode
 
+    @staticmethod
+    def _normalize_mode(value: str) -> str:
+        mode = str(value or "agent").strip().lower()
+        if mode in ("code", "architect"):
+            return "agent"
+        if mode not in ("agent", "ask"):
+            return "agent"
+        return mode
+
     @mode.setter
     def mode(self, value):
-        if value in ("code", "ask", "architect"):
-            self._mode = value
-            self.tools.mode = value
+        normalized = self._normalize_mode(value)
+        self._mode = normalized
+        self.tools.mode = normalized
 
     @property
     def stream_profile(self) -> str:
@@ -107,20 +164,302 @@ class Agent:
     def _stream_profile_setting(self, key: str):
         return self.STREAM_PROFILES[self._stream_profile][key]
 
+    def _turn_source_urls(self) -> List[str]:
+        return [url for url in self._web_evidence_order if url in self._turn_web_sources]
+
+    def _should_enforce_grounding(self) -> bool:
+        return (
+            self.grounded_web_mode == "strict"
+            and self._turn_web_used
+            and bool(self._turn_web_sources)
+        )
+
+    def _build_grounding_context_block(self) -> str:
+        sources = self._turn_source_urls()
+        if not sources:
+            return ""
+
+        remaining = self.grounded_context_chars
+        blocks: List[str] = []
+        for url in sources:
+            if remaining <= 0:
+                break
+            raw = (self._web_evidence_store.get(url) or "").strip()
+            if not raw:
+                continue
+            take = min(len(raw), remaining)
+            excerpt = raw[:take].strip()
+            if not excerpt:
+                continue
+            blocks.append(f"[SOURCE] {url}\n{excerpt}\n[/SOURCE]")
+            remaining -= len(excerpt)
+        return "\n\n".join(blocks)
+
+    def _compose_system_prompt(self, base_system: str, grounding_feedback: str = "") -> str:
+        if not self._should_enforce_grounding():
+            return base_system
+
+        sources = self._turn_source_urls()
+        evidence_block = self._build_grounding_context_block()
+        if not sources or not evidence_block:
+            return base_system
+
+        source_lines = "\n".join(f"- {url}" for url in sources)
+        protocol = (
+            "\n\n## Strict web-grounding protocol (mandatory for this turn)\n"
+            "- You MUST answer using only the provided SOURCE blocks and this turn's web tool outputs.\n"
+            "- Do not use training memory or unstated assumptions.\n"
+            "- Return EXACTLY one JSON object wrapped by tags below, and no other text:\n"
+            f"  {self.GROUNDING_OPEN}\n"
+            "  {\"answer\":\"...\",\"claims\":[{\"text\":\"...\",\"source_url\":\"...\",\"evidence_quote\":\"...\"}],\"sources\":[\"...\"]}\n"
+            f"  {self.GROUNDING_CLOSE}\n"
+            "- If evidence is insufficient, return:\n"
+            f"  {self.GROUNDING_OPEN}\n"
+            "  {\"insufficient_evidence\":true,\"reason\":\"...\",\"sources\":[\"...\"]}\n"
+            f"  {self.GROUNDING_CLOSE}\n"
+            "- Every claim must include source_url from allowed list and an exact evidence_quote substring from that source.\n"
+            "- Allowed source URLs for this turn:\n"
+            f"{source_lines}\n"
+            "- Evidence documents:\n"
+            f"{evidence_block}"
+        )
+
+        if grounding_feedback:
+            protocol += (
+                "\n\n## Grounding validation feedback from previous attempt\n"
+                f"- {grounding_feedback}\n"
+                "- Fix the issue and regenerate the tagged JSON payload only."
+            )
+
+        return base_system + protocol
+
+    def _request_response(self, messages: list, stream: bool) -> LLMResponse:
+        if stream:
+            return self._stream_response(messages)
+        try:
+            return self.llm.chat(messages, tools=self.tools.schemas)
+        except Exception as e:
+            raise ConnectionError(f"Request error: {type(e).__name__}: {e}")
+
+    def _render_assistant_message(self, content: str):
+        console.print()
+        if content.strip():
+            console.print(Markdown(content))
+        else:
+            console.print(content)
+
+    def _parse_grounding_payload(self, content: str) -> Optional[dict]:
+        pattern = (
+            re.escape(self.GROUNDING_OPEN)
+            + r"\s*(\{.*?\})\s*"
+            + re.escape(self.GROUNDING_CLOSE)
+        )
+        m = re.search(pattern, content, flags=re.DOTALL)
+        raw_json = m.group(1) if m else content.strip()
+        try:
+            payload = json.loads(raw_json)
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    @staticmethod
+    def _normalize_text_for_match(text: str) -> str:
+        return re.sub(r"\s+", " ", (text or "")).strip().lower()
+
+    def _quote_exists_in_source(self, quote: str, source_text: str) -> bool:
+        q = self._normalize_text_for_match(quote)
+        s = self._normalize_text_for_match(source_text)
+        if not q or not s:
+            return False
+        return q in s
+
+    def _render_sources_footer(self, sources: List[str]) -> str:
+        if not sources:
+            return ""
+        lines = "\n".join(f"- {url}" for url in sources)
+        return f"\n\nSources:\n{lines}"
+
+    def _render_grounding_refusal(self, reason: str) -> str:
+        msg = "I cannot verify a reliable answer from the fetched sources in this turn."
+        detail = f"\n\nReason: {reason}" if reason else ""
+        hint = "\n\nPlease provide a more specific official URL or ask me to fetch additional sources."
+        footer = self._render_sources_footer(self._turn_source_urls())
+        return msg + detail + hint + footer
+
+    def _finalize_assistant_content(self, raw_content: str) -> Tuple[str, Optional[str]]:
+        if not self._should_enforce_grounding():
+            return raw_content, None
+
+        payload = self._parse_grounding_payload(raw_content)
+        if payload is None:
+            return "", "Missing or invalid grounded JSON payload."
+
+        if payload.get("insufficient_evidence"):
+            reason = str(payload.get("reason", "")).strip()
+            return self._render_grounding_refusal(reason), None
+
+        answer = str(payload.get("answer", "")).strip()
+        if not answer:
+            return "", "Grounded payload must include a non-empty answer field."
+
+        claims = payload.get("claims")
+        if not isinstance(claims, list) or not claims:
+            return "", "Grounded payload must include at least one claim with evidence."
+
+        errors: List[str] = []
+        valid_claim_sources: List[str] = []
+        for index, claim in enumerate(claims, 1):
+            if not isinstance(claim, dict):
+                errors.append(f"Claim #{index} is not an object.")
+                continue
+            claim_text = str(claim.get("text", "")).strip()
+            source_url = str(claim.get("source_url", "")).strip()
+            evidence_quote = str(claim.get("evidence_quote", "")).strip()
+            if not claim_text:
+                errors.append(f"Claim #{index} is missing text.")
+            if not source_url:
+                errors.append(f"Claim #{index} is missing source_url.")
+                continue
+            if source_url not in self._turn_web_sources:
+                errors.append(f"Claim #{index} uses non-turn source URL: {source_url}")
+                continue
+            source_doc = self._web_evidence_store.get(source_url, "")
+            if not source_doc:
+                errors.append(f"Claim #{index} source text is unavailable: {source_url}")
+                continue
+            if len(evidence_quote) < 8:
+                errors.append(f"Claim #{index} evidence_quote is too short.")
+                continue
+            if not self._quote_exists_in_source(evidence_quote, source_doc):
+                errors.append(f"Claim #{index} evidence_quote not found in source: {source_url}")
+                continue
+            valid_claim_sources.append(source_url)
+
+        if errors:
+            return "", "; ".join(errors)
+
+        sources: List[str] = []
+        declared = payload.get("sources")
+        if isinstance(declared, list):
+            for item in declared:
+                url = str(item).strip()
+                if url in self._turn_web_sources and url not in sources:
+                    sources.append(url)
+        for url in valid_claim_sources:
+            if url not in sources:
+                sources.append(url)
+
+        if not sources:
+            sources = self._turn_source_urls()
+
+        rendered = answer
+        if self.grounded_visible_citations in ("sources_only", "inline"):
+            rendered += self._render_sources_footer(sources)
+        return rendered, None
+
+    def _extract_url_and_body(self, result: str) -> Tuple[str, str]:
+        text = result.strip()
+        if not text:
+            return "", ""
+        lines = text.splitlines()
+        if not lines:
+            return "", ""
+        first = lines[0].strip()
+        if first.lower().startswith("url:"):
+            url = first[4:].strip()
+            body = "\n".join(lines[1:]).strip()
+            return url, body
+        return "", text
+
+    def _record_web_evidence(self, url: str, text: str):
+        clean_url = (url or "").strip()
+        if not clean_url.lower().startswith(("http://", "https://")):
+            return
+        clean_text = (text or "").strip()
+        if not clean_text:
+            return
+
+        if len(clean_text) > self.grounded_context_chars:
+            clean_text = clean_text[:self.grounded_context_chars] + "\n... (truncated)"
+
+        self._web_evidence_store[clean_url] = clean_text
+        if clean_url in self._web_evidence_order:
+            self._web_evidence_order.remove(clean_url)
+        self._web_evidence_order.append(clean_url)
+
+        while len(self._web_evidence_order) > self.MAX_WEB_EVIDENCE_DOCS:
+            oldest = self._web_evidence_order.pop(0)
+            self._web_evidence_store.pop(oldest, None)
+
+        self._turn_web_used = True
+        self._turn_web_sources.add(clean_url)
+
+    def _capture_web_fetch_evidence(self, result: str):
+        if result.startswith(("Web error:", "Error:", "⚠", "Blocked:", "Timed out")):
+            return
+        url, body = self._extract_url_and_body(result)
+        if not url:
+            return
+        self._record_web_evidence(url, body)
+
+    def _capture_web_search_evidence(self, result: str):
+        if result.startswith(("Web error:", "Error:", "⚠", "Blocked:", "Timed out")):
+            return
+
+        links = re.findall(r"\[[^\]]+\]\((https?://[^)\s]+)\)", result)
+        if not links:
+            return
+
+        lines = result.splitlines()
+        snippets: Dict[str, List[str]] = {}
+        current_url = ""
+        for raw in lines:
+            line = raw.rstrip()
+            m = re.search(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", line)
+            if m:
+                title = m.group(1).strip()
+                current_url = m.group(2).strip()
+                snippets.setdefault(current_url, [])
+                if title:
+                    snippets[current_url].append(title)
+                continue
+
+            if not current_url:
+                continue
+            stripped = line.strip()
+            if not stripped or stripped.startswith("Search:") or stripped.startswith("**Summary:**"):
+                continue
+            snippets[current_url].append(stripped)
+            if len(" ".join(snippets[current_url])) >= 500:
+                current_url = ""
+
+        for url in links:
+            snippet_text = "\n".join(snippets.get(url, []))
+            if not snippet_text:
+                snippet_text = "Search result source (no snippet provided)."
+            self._record_web_evidence(url, snippet_text)
+
     def chat(self, user_message: str) -> str:
         self.conversation.append({"role": "user", "content": user_message})
         self._files_modified = False
-        system = build_system_prompt(
+        self._turn_web_used = False
+        self._turn_web_sources.clear()
+        grounding_feedback = ""
+        grounding_retries_left = self.grounded_retry
+
+        base_system = build_system_prompt(
             self._mode,
             self.skill_instructions,
             self.answer_style,
         )
 
         for _ in range(self.max_iterations):
+            system = self._compose_system_prompt(base_system, grounding_feedback)
             messages = self._prepare_messages(system)
+            use_stream = not self._should_enforce_grounding()
 
             try:
-                response = self._stream_response(messages)
+                response = self._request_response(messages, stream=use_stream)
             except ConnectionError as e:
                 _log.error("Connection error: %s", e)
                 self._render_error(str(e))
@@ -131,26 +470,49 @@ class Agent:
 
             if response.has_tool_calls():
                 self._handle_tool_calls(response)
+                grounding_feedback = ""
+                grounding_retries_left = self.grounded_retry
                 continue
 
             if response.content:
-                assistant_msg = {"role": "assistant", "content": response.content}
+                finalized_content, retry_feedback = self._finalize_assistant_content(response.content)
+                if retry_feedback:
+                    if grounding_retries_left > 0:
+                        grounding_retries_left -= 1
+                        grounding_feedback = retry_feedback
+                        console.print(f"  [#E3B341]⚠ Grounding validation failed, retrying ({grounding_retries_left} left)…[/#E3B341]")
+                        continue
+                    finalized_content = self._render_grounding_refusal(retry_feedback)
+
+                assistant_msg = {"role": "assistant", "content": finalized_content}
                 if response.reasoning_content is not None:
                     assistant_msg["reasoning_content"] = response.reasoning_content
                 self.conversation.append(assistant_msg)
-                # Rendering already done by _stream_response
+                if not use_stream:
+                    self._render_assistant_message(finalized_content)
+
                 if self._files_modified and self.auto_commit and self.tools.git.available:
                     commit_hash = self.tools.git.auto_commit()
                     if commit_hash:
-                        console.print(f"  [dim]📦 committed: {commit_hash}[/dim]")
+                        console.print()
+                        console.print(f"  [#57DB9C]⎇[/#57DB9C] [#8B949E]committed[/#8B949E] [bold #E6EDF3]{commit_hash}[/bold #E6EDF3]")
                     elif self.tools.git.has_changes():
-                        console.print("  [yellow]⚠ auto-commit skipped (check git status)[/yellow]")
-                return response.content
+                        console.print()
+                        console.print("  [#E3B341]⚠ auto-commit skipped[/#E3B341] [#6E7681](check git status)[/#6E7681]")
+                # Auto-parse structured plan output (available in all modes)
+                plan = self._try_parse_plan(finalized_content)
+                if plan:
+                    self.current_plan = plan
+                    console.print()
+                    console.print(f"  [#58A6FF]▣[/#58A6FF] [#8B949E]Plan parsed:[/#8B949E] "
+                                  f"[bold #E6EDF3]{len(plan.steps)} steps[/bold #E6EDF3] "
+                                  f"[#6E7681]— use[/#6E7681] [bold #58A6FF]/plan execute[/bold #58A6FF] [#6E7681]to run[/#6E7681]")
+                return finalized_content
 
-            console.print("[dim]  (empty response, retrying...)[/dim]")
+            console.print("[#6E7681]  (empty response, retrying...)[/#6E7681]")
 
         msg = f"⚠ Reached max iterations ({self.max_iterations})."
-        console.print(f"\n[yellow]{msg}[/yellow]")
+        console.print(f"\n[#E3B341]{msg}[/#E3B341]")
         return msg
 
     # ── Context window management ──────────────
@@ -338,8 +700,8 @@ class Agent:
 
         trimmed = len(self.conversation) - len(kept)
         if trimmed > 0:
-            console.print(f"  [dim]⚠ Trimmed {trimmed} old messages to fit context window "
-                          f"({context_window:,} tokens)[/dim]")
+            console.print(f"  [#6E7681]⚠ Trimmed {trimmed} old messages to fit context window "
+                          f"({context_window:,} tokens)[/#6E7681]")
 
         return [system_msg] + kept
 
@@ -360,6 +722,7 @@ class Agent:
         thinking_notice_shown = False
         reasoning_stream_buffer = ""
         last_reasoning_brief = ""
+        thinking_status: Optional[Status] = None
         interrupted = False
         last_render_at = 0.0
         last_visible_chars = 0
@@ -386,12 +749,12 @@ class Agent:
                 return Text(accumulated_text)
             elif accumulated_reasoning:
                 if self.reasoning_display == "off":
-                    return Text("  ⏳ thinking…", style="dim")
+                    return Text("  ⏳ thinking…", style="#6E7681")
                 reasoning_lines = accumulated_reasoning.strip().splitlines()
                 if self.reasoning_display != "full":
                     return Text(
                         f"💭 thinking… ({len(reasoning_lines)} lines)",
-                        style="dim",
+                        style="#6E7681",
                     )
                 if len(reasoning_lines) > 12:
                     shown = reasoning_lines[-10:]
@@ -400,9 +763,9 @@ class Agent:
                 else:
                     content = "💭 *thinking…*\n"
                     content += "\n".join(reasoning_lines)
-                return Text(content, style="dim")
+                return Text(content, style="#6E7681")
             else:
-                return Text("  ⏳ thinking…", style="dim")
+                return Text("  ⏳ thinking…", style="#6E7681")
 
         def _visible_chars() -> int:
             if accumulated_text:
@@ -483,8 +846,14 @@ class Agent:
                 return compact[:93] + "..."
             return compact
 
+        def _stop_thinking() -> None:
+            nonlocal thinking_status
+            if thinking_status is not None:
+                thinking_status.stop()
+                thinking_status = None
+
         def _stream_plain_reasoning(chunk: str) -> None:
-            nonlocal reasoning_stream_buffer, thinking_notice_shown, last_reasoning_brief
+            nonlocal reasoning_stream_buffer, thinking_notice_shown, last_reasoning_brief, thinking_status
             if self.reasoning_display == "off" or not chunk:
                 return
 
@@ -497,16 +866,19 @@ class Agent:
                 if self.reasoning_display == "summary" and brief == last_reasoning_brief:
                     continue
 
+                msg = line.strip() if self.reasoning_display == "full" else brief
                 if not thinking_notice_shown:
-                    console.print("\n  [dim]💭 thinking…[/dim]")
+                    thinking_status = Status(
+                        f"  [#6E7681]💭 {msg}[/#6E7681]",
+                        console=console, spinner="dots", spinner_style="#7FA6D9")
+                    thinking_status.start()
                     thinking_notice_shown = True
-
-                message = line.strip() if self.reasoning_display == "full" else brief
-                console.print(f"  [dim]💭 {message}[/dim]")
+                else:
+                    thinking_status.update(f"  [#6E7681]💭 {msg}[/#6E7681]")
                 last_reasoning_brief = brief
 
         def _flush_plain_reasoning_buffer() -> None:
-            nonlocal reasoning_stream_buffer, thinking_notice_shown, last_reasoning_brief
+            nonlocal reasoning_stream_buffer, thinking_notice_shown, last_reasoning_brief, thinking_status
             if self.reasoning_display == "off":
                 reasoning_stream_buffer = ""
                 return
@@ -520,12 +892,15 @@ class Agent:
                 reasoning_stream_buffer = ""
                 return
 
+            msg = reasoning_stream_buffer.strip() if self.reasoning_display == "full" else brief
             if not thinking_notice_shown:
-                console.print("\n  [dim]💭 thinking…[/dim]")
+                thinking_status = Status(
+                    f"  [#6E7681]💭 {msg}[/#6E7681]",
+                    console=console, spinner="dots", spinner_style="#7FA6D9")
+                thinking_status.start()
                 thinking_notice_shown = True
-
-            message = reasoning_stream_buffer.strip() if self.reasoning_display == "full" else brief
-            console.print(f"  [dim]💭 {message}[/dim]")
+            else:
+                thinking_status.update(f"  [#6E7681]💭 {msg}[/#6E7681]")
             last_reasoning_brief = brief
             reasoning_stream_buffer = ""
 
@@ -569,6 +944,7 @@ class Agent:
                 if event_type == "text":
                     accumulated_text += data
                     if use_plain_stream:
+                        _stop_thinking()
                         _flush_plain_reasoning_buffer()
                         _stream_plain_text(data)
                     else:
@@ -587,6 +963,7 @@ class Agent:
                     response = data
         except KeyboardInterrupt:
             interrupted = True
+            _stop_thinking()
             if plain_stream_started:
                 console.print()
             # Build a partial response from what we have so far
@@ -595,12 +972,13 @@ class Agent:
             if reasoning is not None and not reasoning:
                 reasoning = ""
             response = LLMResponse(content=content, reasoning_content=reasoning)
-            console.print("\n  [yellow]⚠ Stream interrupted by user[/yellow]")
+            console.print("\n  [#E3B341]⚠ Stream interrupted by user[/#E3B341]")
         except ConnectionError:
             raise
         except Exception as e:
             raise ConnectionError(f"Streaming error: {type(e).__name__}: {e}")
         finally:
+            _stop_thinking()
             if live is not None:
                 _maybe_render(force=True, final=True)
                 live.stop()
@@ -615,12 +993,46 @@ class Agent:
             if accumulated_reasoning and accumulated_text:
                 reasoning_lines = accumulated_reasoning.strip().splitlines()
                 if self.reasoning_display != "off" and len(reasoning_lines) > 3:
-                    console.print(f"  [dim]💭 thinking: {len(reasoning_lines)} lines[/dim]")
+                    console.print()
+                    console.print(f"  [#484F58]───[/#484F58] [#6E7681]💭 {len(reasoning_lines)} lines of reasoning[/#6E7681] [#484F58]───[/#484F58]")
 
         if response is None:
             raise ConnectionError("Stream ended without completion")
 
         return response
+
+    def _execute_single_tool_call(self, tc):
+        t0 = time.monotonic()
+        result = self.tools.execute(tc.name, tc.arguments)
+        elapsed = time.monotonic() - t0
+        return result, elapsed
+
+    def _can_batch_parallel(self, tool_calls: List[Any]) -> bool:
+        if len(tool_calls) < 2:
+            return False
+        if self.mode not in ("agent", "ask"):
+            return False
+        for tc in tool_calls:
+            if not self.tools.can_parallelize(tc.name):
+                return False
+            if ToolRegistry.needs_confirmation(tc.name):
+                return False
+        return True
+
+    def _handle_parallel_tool_calls(self, tool_calls: List[Any]) -> Dict[str, tuple[str, float]]:
+        max_workers = min(self.tool_parallelism, len(tool_calls))
+        results: Dict[str, tuple[str, float]] = {}
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="tool") as pool:
+            future_map = {
+                pool.submit(self._execute_single_tool_call, tc): tc.id
+                for tc in tool_calls
+            }
+            for future, tool_id in list(future_map.items()):
+                try:
+                    results[tool_id] = future.result()
+                except Exception as e:
+                    results[tool_id] = (f"Tool execution error: {type(e).__name__}: {e}", 0.0)
+        return results
 
     def _handle_tool_calls(self, response: LLMResponse):
         tc_raw = [
@@ -636,19 +1048,31 @@ class Agent:
             assistant_msg["reasoning_content"] = response.reasoning_content
         self.conversation.append(assistant_msg)
 
-        for tc in response.tool_calls:
-            self._render_tool_call(tc.name, tc.arguments)
+        parallel_results: Dict[str, tuple[str, float]] = {}
+        if self._can_batch_parallel(response.tool_calls):
+            parallel_results = self._handle_parallel_tool_calls(response.tool_calls)
+
+        total_calls = len(response.tool_calls)
+        batch_start = time.monotonic()
+
+        for i, tc in enumerate(response.tool_calls, 1):
+            if i > 1 and total_calls > 1:
+                console.print("     [#30363D]·[/#30363D]")
+            self._render_tool_call(tc.name, tc.arguments, index=i, total=total_calls)
 
             if not self.auto_confirm and ToolRegistry.needs_confirmation(tc.name):
                 if not self._confirm(tc.name, tc.arguments):
                     self.conversation.append({"role": "tool", "tool_call_id": tc.id,
                                               "content": "⚠ User denied."})
-                    console.print("  [yellow]↳ skipped[/yellow]")
+                    console.print("  [#E3B341]↳ skipped[/#E3B341]")
                     continue
 
-            t0 = time.monotonic()
-            result = self.tools.execute(tc.name, tc.arguments)
-            elapsed = time.monotonic() - t0
+            if tc.id in parallel_results:
+                result, elapsed = parallel_results[tc.id]
+            else:
+                with Status(f"  [#6E7681]  running…[/#6E7681]",
+                            console=console, spinner="dots", spinner_style="#7FA6D9"):
+                    result, elapsed = self._execute_single_tool_call(tc)
             self._render_result(tc.name, result, elapsed)
 
             # Handle image results specially for multimodal
@@ -657,15 +1081,25 @@ class Agent:
                 continue
 
             if tc.name == "web_fetch":
+                self._capture_web_fetch_evidence(result)
                 stored_result = self._summarize_web_for_context(result)
                 self.conversation.append({"role": "tool", "tool_call_id": tc.id, "content": stored_result})
                 continue
 
+            if tc.name == "web_search":
+                self._capture_web_search_evidence(result)
+
             if tc.name in ToolRegistry.WRITE_TOOLS:
                 self._files_modified = True
+                self._render_write_diff(tc.name, tc.arguments)
             # Truncate large tool results in conversation to preserve context window
             stored_result = self._truncate_tool_result(result)
+            stored_result = self._inject_error_hint(tc.name, tc.arguments, stored_result)
             self.conversation.append({"role": "tool", "tool_call_id": tc.id, "content": stored_result})
+
+        if total_calls > 1:
+            batch_elapsed = time.monotonic() - batch_start
+            console.print(f"\n  [#484F58]─ {total_calls} tools · {batch_elapsed:.1f}s ─[/#484F58]")
 
     def _summarize_web_for_context(self, result: str) -> str:
         """Store concise web content in context to reduce token pressure."""
@@ -788,15 +1222,40 @@ class Agent:
                 self._show_write_preview(arguments)
             elif tool_name == "bash":
                 cmd = arguments.get("command", "")
-                console.print(f"  [dim]command:[/dim] {cmd}")
+                console.print(f"  [#6E7681]$[/#6E7681] {cmd}")
 
-            ans = console.input("  (y)es / (n)o / (a)lways: ").strip().lower()
+            ans = console.input(
+                "  [#E3B341]?[/#E3B341] "
+                "[bold #E6EDF3](y)[/bold #E6EDF3][#8B949E]es[/#8B949E] / "
+                "[bold #E6EDF3](n)[/bold #E6EDF3][#8B949E]o[/#8B949E] / "
+                "[bold #E6EDF3](a)[/bold #E6EDF3][#8B949E]lways[/#8B949E]: "
+            ).strip().lower()
             if ans in ("a", "always"):
                 self.auto_confirm = True
                 return True
             return ans in ("y", "yes", "")
         except (KeyboardInterrupt, EOFError):
             return False
+
+    def _build_diff_panel(self, diff: str) -> Panel:
+        """Build a Rich Panel containing colored diff output."""
+        diff_text = Text()
+        lines = diff.splitlines()[:30]
+        for i, line in enumerate(lines):
+            if i > 0:
+                diff_text.append("\n")
+            if line.startswith('+') and not line.startswith('+++'):
+                diff_text.append(line, style="#57DB9C")
+            elif line.startswith('-') and not line.startswith('---'):
+                diff_text.append(line, style="#F85149")
+            elif line.startswith('@@'):
+                diff_text.append(line, style="#58A6FF")
+            else:
+                diff_text.append(line, style="#6E7681")
+        total = len(diff.splitlines())
+        if total > 30:
+            diff_text.append(f"\n… {total - 30} more lines", style="#6E7681")
+        return Panel(diff_text, border_style="#30363D", padding=(0, 1), expand=False)
 
     def _show_edit_preview(self, tool_name: str, arguments: dict):
         """Show diff preview for str_replace."""
@@ -806,20 +1265,9 @@ class Agent:
 
         can_apply, diff = self.tools.files.preview_str_replace(path, old_str, new_str)
         if can_apply and diff:
-            console.print("  [dim]─── diff preview ───[/dim]")
-            for line in diff.splitlines()[:30]:
-                if line.startswith('+') and not line.startswith('+++'):
-                    console.print(f"  [green]{line}[/green]")
-                elif line.startswith('-') and not line.startswith('---'):
-                    console.print(f"  [red]{line}[/red]")
-                elif line.startswith('@@'):
-                    console.print(f"  [cyan]{line}[/cyan]")
-                else:
-                    console.print(f"  [dim]{line}[/dim]")
-            if len(diff.splitlines()) > 30:
-                console.print(f"  [dim]... ({len(diff.splitlines()) - 30} more lines)[/dim]")
+            console.print(self._build_diff_panel(diff))
         elif not can_apply:
-            console.print(f"  [yellow]⚠ {diff}[/yellow]")
+            console.print(f"  [#E3B341]⚠ {diff}[/#E3B341]")
 
     def _show_write_preview(self, arguments: dict):
         """Show diff preview for write_file."""
@@ -828,20 +1276,9 @@ class Agent:
 
         is_overwrite, diff = self.tools.files.preview_write_file(path, content)
         if is_overwrite and diff:
-            console.print("  [dim]─── diff preview ───[/dim]")
-            for line in diff.splitlines()[:30]:
-                if line.startswith('+') and not line.startswith('+++'):
-                    console.print(f"  [green]{line}[/green]")
-                elif line.startswith('-') and not line.startswith('---'):
-                    console.print(f"  [red]{line}[/red]")
-                elif line.startswith('@@'):
-                    console.print(f"  [cyan]{line}[/cyan]")
-                else:
-                    console.print(f"  [dim]{line}[/dim]")
-            if len(diff.splitlines()) > 30:
-                console.print(f"  [dim]... ({len(diff.splitlines()) - 30} more lines)[/dim]")
+            console.print(self._build_diff_panel(diff))
         else:
-            console.print(f"  [dim]{diff}[/dim]")
+            console.print(f"  [#6E7681]{diff}[/#6E7681]")
 
     def _handle_image_result(self, tc, result: str):
         """Handle image tool result for multimodal LLM."""
@@ -874,20 +1311,23 @@ class Agent:
 
     def _render_error(self, message: str):
         panel = Panel(
-            f"[red]{message}[/red]",
-            title="[bold red]Error[/bold red]",
+            f"[#F85149]{message}[/#F85149]",
+            title="[bold #F85149]Error[/bold #F85149]",
             title_align="left",
-            border_style="red",
+            border_style="#F85149",
             padding=(0, 2),
         )
         console.print()
         console.print(panel)
 
-    def _render_tool_call(self, name, args):
-        icons = {"read_file": "📖", "create_file": "📝", "write_file": "📝",
-                 "str_replace": "✏️ ", "delete_file": "🗑️ ", "list_directory": "📁",
-                 "search_files": "🔍", "bash": "💻", "web_fetch": "🌐"}
-        icon = icons.get(name, "🔧")
+    def _render_tool_call(self, name, args, index=None, total=None):
+        icons = {
+            "read_file": "▸", "create_file": "◆", "write_file": "◆",
+            "str_replace": "✎", "delete_file": "✕", "list_directory": "≡",
+            "search_files": "⊙", "bash": "$", "web_fetch": "◎",
+            "read_image": "▣",
+        }
+        icon = icons.get(name, "·")
 
         match name:
             case "bash":
@@ -910,7 +1350,11 @@ class Agent:
             case _:
                 detail = ""
 
-        console.print(f"\n  {icon} [bold]{name}[/bold] [dim]{detail}[/dim]")
+        progress = ""
+        if total and total > 1:
+            progress = f"[#6E7681]{index}/{total}[/#6E7681] "
+
+        console.print(f"\n  {progress}[#7FA6D9]{icon}[/#7FA6D9] [bold #E6EDF3]{name}[/bold #E6EDF3] [#6E7681]{detail}[/#6E7681]")
 
     def _render_result(self, name, result, elapsed: float = 0):
         if (
@@ -921,7 +1365,7 @@ class Agent:
             result = self._format_web_result_preview(result)
 
         lines = result.splitlines()
-        time_str = f" [dim]({elapsed:.1f}s)[/dim]" if elapsed >= 0.1 else ""
+        time_str = f" [#484F58]({elapsed:.1f}s)[/#484F58]" if elapsed >= 0.1 else ""
 
         # Detect success vs error
         is_error = result.startswith(("⚠", "⛔", "⏱", "Error:", "Blocked:", "Timed out"))
@@ -930,18 +1374,87 @@ class Agent:
 
         if is_error:
             preview = result if len(lines) <= 5 else "\n".join(lines[:5]) + f"\n     ... ({len(lines)-5} more)"
-            console.print(f"     [red]{preview}[/red]{time_str}")
+            console.print(f"     [#F85149]{preview}[/#F85149]{time_str}")
         elif is_success:
-            console.print(f"     [green]✓ {result.splitlines()[0]}[/green]{time_str}")
+            first_line = result.splitlines()[0]
+            if first_line.startswith("✓ "):
+                first_line = first_line[2:]
+            elif first_line.startswith("✓"):
+                first_line = first_line[1:].lstrip()
+            console.print(f"     [#57DB9C]✓ {first_line}[/#57DB9C]{time_str}")
         else:
             if len(lines) > 20:
                 preview = "\n".join(lines[:15]) + f"\n     ... ({len(lines)-15} more lines)"
             else:
                 preview = result
             for line in preview.splitlines()[:20]:
-                console.print(f"     [dim]{line}[/dim]")
+                console.print(f"     [#6E7681]{line}[/#6E7681]")
             if time_str:
                 console.print(f"     {time_str}")
+
+    def _render_write_diff(self, tool_name: str, arguments: dict):
+        """Always show compact diff for write operations, regardless of auto_confirm."""
+        if tool_name == "str_replace":
+            old_str = arguments.get("old_str", "")
+            new_str = arguments.get("new_str", "")
+            console.print("     [#30363D]┌─[/#30363D]")
+            for line in old_str.splitlines()[:3]:
+                console.print(f"     [#30363D]│[/#30363D] [#F85149]- {line[:100]}[/#F85149]")
+            for line in new_str.splitlines()[:3]:
+                console.print(f"     [#30363D]│[/#30363D] [#57DB9C]+ {line[:100]}[/#57DB9C]")
+            old_lines = old_str.count('\n') + 1
+            new_lines = new_str.count('\n') + 1
+            if old_lines > 3 or new_lines > 3:
+                console.print(f"     [#30363D]│[/#30363D] [#6E7681]({old_lines} lines → {new_lines} lines)[/#6E7681]")
+            console.print("     [#30363D]└─[/#30363D]")
+        elif tool_name in ("write_file", "create_file"):
+            content = arguments.get("content", "")
+            line_count = content.count('\n') + 1
+            console.print(f"     [#6E7681]({line_count} lines written)[/#6E7681]")
+
+    def _inject_error_hint(self, tool_name: str, arguments: dict, result: str) -> str:
+        """Append recovery hints to failed tool results."""
+        if not result.startswith(("Error:", "⚠")):
+            return result
+
+        if tool_name == "str_replace" and "not found" in result.lower():
+            path = arguments.get("path", "")
+            return (result + "\n\nHINT: The exact search string was not found in the file. "
+                    f"Use read_file on '{path}' to see the current content, "
+                    "then retry str_replace with the exact text from the file.")
+
+        if tool_name == "bash":
+            return (result + "\n\nHINT: The command failed. Review the error output above, "
+                    "check for typos or missing dependencies, and adjust the command.")
+
+        if tool_name == "create_file" and "exists" in result.lower():
+            return (result + "\n\nHINT: File already exists. Use str_replace for targeted edits "
+                    "or write_file to overwrite the entire file.")
+
+        return result
+
+    def _try_parse_plan(self, content: str) -> Optional[Plan]:
+        """Try to parse a structured plan from LLM response."""
+        title_match = re.search(r'##\s*Plan:\s*(.+)', content)
+        if not title_match:
+            return None
+
+        title = title_match.group(1).strip()
+        step_pattern = re.compile(
+            r'(\d+)\.\s*\[(\w+)\]\s*`([^`]+)`\s*[—\-]\s*(.+)'
+        )
+        steps = []
+        for m in step_pattern.finditer(content):
+            steps.append(PlanStep(
+                index=int(m.group(1)),
+                action=m.group(2),
+                target=m.group(3),
+                description=m.group(4).strip(),
+            ))
+
+        if not steps:
+            return None
+        return Plan(title=title, steps=steps)
 
     def get_stats(self) -> Dict:
         user_msgs = sum(1 for m in self.conversation if m.get("role") == "user")
@@ -1017,3 +1530,5 @@ class Agent:
     def reset(self):
         self.conversation.clear()
         self.total_tokens = 0
+        self._turn_web_used = False
+        self._turn_web_sources.clear()

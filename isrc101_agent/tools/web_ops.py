@@ -6,7 +6,7 @@ Tavily: AI-optimized search, optional upgrade when API key is set.
 """
 
 import re
-from typing import Optional
+from typing import Optional, List
 from urllib.parse import urlparse
 
 try:
@@ -92,32 +92,73 @@ class WebOps:
 
     # ── Web Search ──
 
-    def search(self, query: str, max_results: int = 5) -> str:
+    def search(self, query: str, max_results: int = 5, domains: Optional[List[str]] = None) -> str:
         """Search web: Tavily (if key set) → DuckDuckGo (free default)."""
         if self._tavily:
-            return self._search_tavily(query, max_results)
+            return self._search_tavily(query, max_results, domains=domains)
         if HAS_DDG:
-            return self._search_ddg(query, max_results)
+            return self._search_ddg(query, max_results, domains=domains)
         raise WebOpsError("No search backend. Install: pip install ddgs")
 
-    def _search_ddg(self, query: str, max_results: int) -> str:
+    def _search_ddg(self, query: str, max_results: int, domains: Optional[List[str]] = None) -> str:
         """DuckDuckGo search — free, no API key."""
         try:
             ddgs = DDGS()
-            results = list(ddgs.text(query, max_results=max_results))
+            effective_query = query
+            normalized_domains = [d.strip() for d in (domains or []) if str(d).strip()]
+            if normalized_domains:
+                domain_filter = " OR ".join(f"site:{d}" for d in normalized_domains)
+                effective_query = f"({query}) ({domain_filter})"
+            results = list(ddgs.text(effective_query, max_results=max_results))
         except Exception as e:
             raise WebOpsError(f"DuckDuckGo search failed: {e}")
+
+        if domains:
+            results = self._filter_results_by_domains(results, domains)
+
         return self._format_ddg_results(query, results)
 
-    def _search_tavily(self, query: str, max_results: int) -> str:
+    def _search_tavily(self, query: str, max_results: int, domains: Optional[List[str]] = None) -> str:
         """Tavily search — AI-optimized, needs API key."""
         try:
-            result = self._tavily.search(
-                query=query, max_results=max_results, include_answer=True,
-            )
+            kwargs = {
+                "query": query,
+                "max_results": max_results,
+                "include_answer": True,
+            }
+            normalized_domains = [d.strip() for d in (domains or []) if str(d).strip()]
+            if normalized_domains:
+                kwargs["include_domains"] = normalized_domains
+            result = self._tavily.search(**kwargs)
         except Exception as e:
             raise WebOpsError(f"Tavily search failed: {e}")
+
+        if domains and isinstance(result, dict):
+            result["results"] = self._filter_results_by_domains(result.get("results", []), domains, tavily=True)
+
         return self._format_tavily_results(query, result)
+
+    @staticmethod
+    def _filter_results_by_domains(results, domains: List[str], tavily: bool = False):
+        normalized = [str(d).strip().lower() for d in domains if str(d).strip()]
+        if not normalized:
+            return results
+
+        filtered = []
+        for item in results:
+            url = ""
+            if tavily and isinstance(item, dict):
+                url = str(item.get("url", ""))
+            elif isinstance(item, dict):
+                url = str(item.get("href", ""))
+            if not url:
+                continue
+
+            host = urlparse(url).netloc.lower()
+            host = host[4:] if host.startswith("www.") else host
+            if any(host == domain or host.endswith(f".{domain}") for domain in normalized):
+                filtered.append(item)
+        return filtered
 
     # ── Formatters ──
 

@@ -18,6 +18,12 @@ from .skills import build_skill_instructions, discover_skills
 from .tools import ToolRegistry
 
 THEME_ACCENT = "#7FA6D9"
+THEME_BORDER = "#30363D"
+THEME_DIM = "#6E7681"
+THEME_SUCCESS = "#57DB9C"
+THEME_WARN = "#E3B341"
+THEME_ERROR = "#F85149"
+THEME_INFO = "#58A6FF"
 
 _SLASH_COMMAND_NAMES = [
     "/help",
@@ -25,7 +31,9 @@ _SLASH_COMMAND_NAMES = [
     "/mode",
     "/skills",
     "/web",
+    "/grounding",
     "/display",
+    "/plan",
     "/save",
     "/load",
     "/sessions",
@@ -98,19 +106,20 @@ def handle_command(
     ctx = CommandContext(console=console, agent=agent, config=config, llm=llm, tools=tools)
     handler = COMMAND_HANDLERS.get(cmd)
     if not handler:
-        console.print(f"  [yellow]Unknown: {cmd}. Try /help[/yellow]")
+        console.print(f"  [{THEME_WARN}]Unknown: {cmd}. Try /help[/{THEME_WARN}]")
         return ""
 
     return handler(ctx, args)
 
 
 def _show_config_panel(console: Console, config: Config) -> None:
-    table = Table(show_header=False, border_style=THEME_ACCENT, padding=(0, 2))
-    table.add_column("Key", style="bold")
-    table.add_column("Value")
+    table = Table(show_header=False, border_style=THEME_BORDER, padding=(0, 2), box=None)
+    table.add_column("Key", style=f"bold {THEME_ACCENT}", min_width=14)
+    table.add_column("Value", style="#E6EDF3")
     for key, value in config.summary().items():
         table.add_row(key, str(value))
-    console.print(Panel(table, title="[bold]Configuration[/bold]", border_style=THEME_ACCENT))
+    console.print(Panel(table, title=f"[bold {THEME_ACCENT}] Configuration [/bold {THEME_ACCENT}]",
+                        title_align="left", border_style=THEME_BORDER, padding=(0, 1)))
 
 
 def show_config_panel(console: Console, config: Config) -> None:
@@ -134,9 +143,9 @@ def _switch_model(ctx: CommandContext, name: str, persist: bool = True) -> None:
     ctx.llm.temperature = kwargs["temperature"]
     ctx.llm.max_tokens = kwargs["max_tokens"]
     ctx.llm.context_window = kwargs["context_window"]
-    ctx.console.print(f"  [green]✓ Switched → [bold]{name}[/bold] ({preset.model})[/green]")
+    ctx.console.print(f"  [{THEME_SUCCESS}]✓[/{THEME_SUCCESS}] Switched → [bold]{name}[/bold] [{THEME_DIM}]({preset.model})[/{THEME_DIM}]")
     if preset.api_base:
-        ctx.console.print(f"    [dim]{preset.api_base}[/dim]")
+        ctx.console.print(f"    [{THEME_DIM}]{preset.api_base}[/{THEME_DIM}]")
 
 
 def _restore_session_metadata(ctx: CommandContext, data: dict) -> list[str]:
@@ -146,10 +155,14 @@ def _restore_session_metadata(ctx: CommandContext, data: dict) -> list[str]:
         return restored
 
     mode = metadata.get("mode")
-    if isinstance(mode, str) and mode in ("code", "ask", "architect"):
-        ctx.agent.mode = mode
-        ctx.config.chat_mode = mode
-        restored.append(f"mode={mode}")
+    if isinstance(mode, str):
+        normalized_mode = str(mode).strip().lower()
+        if normalized_mode in ("code", "architect"):
+            normalized_mode = "agent"
+        if normalized_mode in ("agent", "ask"):
+            ctx.agent.mode = normalized_mode
+            ctx.config.chat_mode = normalized_mode
+            restored.append(f"mode={normalized_mode}")
 
     model = metadata.get("model")
     if isinstance(model, str) and model:
@@ -158,21 +171,21 @@ def _restore_session_metadata(ctx: CommandContext, data: dict) -> list[str]:
                 _switch_model(ctx, model, persist=False)
             restored.append(f"model={model}")
         else:
-            ctx.console.print(f"  [yellow]⚠ Saved model not found: {model}[/yellow]")
+            ctx.console.print(f"  [{THEME_WARN}]⚠ Saved model not found: {model}[/{THEME_WARN}]")
 
     return restored
 
 
 def _show_model_table(ctx: CommandContext) -> None:
-    table = Table(border_style=THEME_ACCENT)
+    table = Table(border_style=THEME_BORDER)
     table.add_column("", width=2)
-    table.add_column("Name", style="bold")
-    table.add_column("Model")
-    table.add_column("API Base")
-    table.add_column("Key")
-    table.add_column("Description")
+    table.add_column("Name", style=f"bold {THEME_ACCENT}")
+    table.add_column("Model", style="#E6EDF3")
+    table.add_column("API Base", style=THEME_DIM)
+    table.add_column("Key", style=THEME_DIM)
+    table.add_column("Description", style="#8B949E")
     for model in ctx.config.list_models():
-        marker = "[green]●[/green]" if model["active"] else " "
+        marker = f"[{THEME_SUCCESS}]●[/{THEME_SUCCESS}]" if model["active"] else " "
         table.add_row(
             marker,
             model["name"],
@@ -181,46 +194,48 @@ def _show_model_table(ctx: CommandContext) -> None:
             model["key"],
             model["desc"],
         )
-    ctx.console.print(Panel(table, title="[bold]Models[/bold]", border_style=THEME_ACCENT))
+    ctx.console.print(Panel(table, title=f"[bold {THEME_ACCENT}] Models [/bold {THEME_ACCENT}]",
+                            title_align="left", border_style=THEME_BORDER))
 
 
 def _show_skill_table(ctx: CommandContext, skills: dict) -> None:
     if not skills:
-        ctx.console.print("  [yellow]No skills found. Create skills under ./skills first.[/yellow]")
+        ctx.console.print(f"  [{THEME_WARN}]No skills found. Create skills under ./skills first.[/{THEME_WARN}]")
         return
 
-    table = Table(border_style=THEME_ACCENT)
+    table = Table(border_style=THEME_BORDER)
     table.add_column("", width=2)
-    table.add_column("Skill", style="bold")
-    table.add_column("Description")
-    table.add_column("Path")
+    table.add_column("Skill", style=f"bold {THEME_ACCENT}")
+    table.add_column("Description", style="#8B949E")
+    table.add_column("Path", style=THEME_DIM)
 
     for name in sorted(skills.keys()):
         spec = skills[name]
-        marker = "[green]●[/green]" if name in ctx.config.enabled_skills else " "
+        marker = f"[{THEME_SUCCESS}]●[/{THEME_SUCCESS}]" if name in ctx.config.enabled_skills else " "
         table.add_row(marker, name, spec.description, spec.path)
 
-    ctx.console.print(Panel(table, title="[bold]Skills[/bold]", border_style=THEME_ACCENT))
+    ctx.console.print(Panel(table, title=f"[bold {THEME_ACCENT}] Skills [/bold {THEME_ACCENT}]",
+                            title_align="left", border_style=THEME_BORDER))
 
 
 def _refresh_skill_instructions(ctx: CommandContext, skills: dict) -> None:
     skill_prompt, _, missing = build_skill_instructions(skills, ctx.config.enabled_skills)
     ctx.agent.skill_instructions = skill_prompt
     if missing:
-        ctx.console.print(f"  [yellow]⚠ Missing skills:[/yellow] {', '.join(missing)}")
+        ctx.console.print(f"  [{THEME_WARN}]⚠ Missing skills:[/{THEME_WARN}] {', '.join(missing)}")
 
 
 def _cmd_quit(ctx: CommandContext, args: list[str]) -> str:
     _ = args
-    ctx.console.print("[dim]Goodbye![/dim]")
+    ctx.console.print(f"[{THEME_DIM}]Goodbye![/{THEME_DIM}]")
     return "quit"
 
 
 def _cmd_help(ctx: CommandContext, args: list[str]) -> str:
     _ = args
-    from .ui import HELP_TEXT
+    from .ui import render_help
 
-    ctx.console.print(HELP_TEXT)
+    render_help(ctx.console)
     return ""
 
 
@@ -232,7 +247,7 @@ def _cmd_model(ctx: CommandContext, args: list[str]) -> str:
         if name and name != ctx.config.active_model:
             _switch_model(ctx, name)
         elif name:
-            ctx.console.print(f"  [dim]Already on '{name}'[/dim]")
+            ctx.console.print(f"  [{THEME_DIM}]Already on '{name}'[/{THEME_DIM}]")
         return ""
 
     if args[0] == "list":
@@ -252,7 +267,7 @@ def _cmd_model(ctx: CommandContext, args: list[str]) -> str:
             description=f"{provider}/{model_str}",
         )
         ctx.config.save()
-        ctx.console.print(f"  [green]✓ Added '{name}'[/green]")
+        ctx.console.print(f"  [{THEME_SUCCESS}]✓ Added '{name}'[/{THEME_SUCCESS}]")
         return ""
 
     if args[0] == "add":
@@ -262,20 +277,20 @@ def _cmd_model(ctx: CommandContext, args: list[str]) -> str:
     if args[0] == "rm" and len(args) >= 2:
         name = args[1]
         if name == ctx.config.active_model:
-            ctx.console.print("  [yellow]Cannot remove active model. Switch first.[/yellow]")
+            ctx.console.print(f"  [{THEME_WARN}]Cannot remove active model. Switch first.[/{THEME_WARN}]")
         elif name in ctx.config.models:
             del ctx.config.models[name]
             ctx.config.save()
-            ctx.console.print(f"  [green]✓ Removed '{name}'[/green]")
+            ctx.console.print(f"  [{THEME_SUCCESS}]✓ Removed '{name}'[/{THEME_SUCCESS}]")
         else:
-            ctx.console.print(f"  [yellow]Not found: '{name}'[/yellow]")
+            ctx.console.print(f"  [{THEME_WARN}]Not found: '{name}'[/{THEME_WARN}]")
         return ""
 
     name = args[0]
     if name in ctx.config.models:
         _switch_model(ctx, name)
     else:
-        ctx.console.print(f"  [yellow]Unknown: '{name}'. Use /model to browse.[/yellow]")
+        ctx.console.print(f"  [{THEME_WARN}]Unknown: '{name}'. Use /model to browse.[/{THEME_WARN}]")
     return ""
 
 
@@ -291,9 +306,9 @@ def _cmd_skills(ctx: CommandContext, args: list[str]) -> str:
         ctx.config.save()
         _refresh_skill_instructions(ctx, skills)
         if selected:
-            ctx.console.print(f"  [green]✓ Enabled skills:[/green] {', '.join(selected)}")
+            ctx.console.print(f"  [{THEME_SUCCESS}]✓ Enabled skills:[/{THEME_SUCCESS}] {', '.join(selected)}")
         else:
-            ctx.console.print("  [green]✓ Skills disabled[/green]")
+            ctx.console.print(f"  [{THEME_SUCCESS}]✓ Skills disabled[/{THEME_SUCCESS}]")
         return ""
 
     if args[0] == "list":
@@ -303,13 +318,13 @@ def _cmd_skills(ctx: CommandContext, args: list[str]) -> str:
     if args[0] == "on" and len(args) >= 2:
         name = args[1]
         if name not in skills:
-            ctx.console.print(f"  [yellow]Unknown skill: '{name}'. Use /skills list[/yellow]")
+            ctx.console.print(f"  [{THEME_WARN}]Unknown skill: '{name}'. Use /skills list[/{THEME_WARN}]")
         else:
             if name not in ctx.config.enabled_skills:
                 ctx.config.enabled_skills.append(name)
                 ctx.config.save()
             _refresh_skill_instructions(ctx, skills)
-            ctx.console.print(f"  [green]✓ Skill enabled:[/green] {name}")
+            ctx.console.print(f"  [{THEME_SUCCESS}]✓ Skill enabled:[/{THEME_SUCCESS}] {name}")
         return ""
 
     if args[0] == "off" and len(args) >= 2:
@@ -318,14 +333,14 @@ def _cmd_skills(ctx: CommandContext, args: list[str]) -> str:
             ctx.config.enabled_skills = [item for item in ctx.config.enabled_skills if item != name]
             ctx.config.save()
         _refresh_skill_instructions(ctx, skills)
-        ctx.console.print(f"  [green]✓ Skill disabled:[/green] {name}")
+        ctx.console.print(f"  [{THEME_SUCCESS}]✓ Skill disabled:[/{THEME_SUCCESS}] {name}")
         return ""
 
     if args[0] == "clear":
         ctx.config.enabled_skills = []
         ctx.config.save()
         _refresh_skill_instructions(ctx, skills)
-        ctx.console.print("  [green]✓ All skills disabled[/green]")
+        ctx.console.print(f"  [{THEME_SUCCESS}]✓ All skills disabled[/{THEME_SUCCESS}]")
         return ""
 
     ctx.console.print("  Usage: /skills | /skills list | /skills on <name> | /skills off <name> | /skills clear")
@@ -334,29 +349,39 @@ def _cmd_skills(ctx: CommandContext, args: list[str]) -> str:
 
 def _cmd_mode(ctx: CommandContext, args: list[str]) -> str:
     if not args:
-        ctx.console.print(f"  Current: [bold]{ctx.agent.mode}[/bold]  (code | ask | architect)")
+        mode_colors = {"agent": THEME_SUCCESS, "ask": THEME_WARN}
+        mc = mode_colors.get(ctx.agent.mode, THEME_DIM)
+        ctx.console.print(f"  [{mc}]●[/{mc}] [{mc}]{ctx.agent.mode}[/{mc}]  [{THEME_DIM}](agent | ask)[/{THEME_DIM}]")
         return ""
 
-    if args[0] in ("code", "ask", "architect"):
+    requested_mode = args[0].strip().lower()
+    if requested_mode in ("code", "architect"):
+        requested_mode = "agent"
+
+    if requested_mode in ("agent", "ask"):
         old_mode = ctx.agent.mode
-        ctx.agent.mode = args[0]
-        ctx.console.print(f"  [green]✓ Mode → {args[0]}[/green]")
-        if old_mode != args[0] and len(ctx.agent.conversation) > 2:
-            ctx.console.print("  [dim]💡 Tip: conversation history preserved. Use /reset to start fresh.[/dim]")
+        ctx.agent.mode = requested_mode
+        ctx.config.chat_mode = requested_mode
+        ctx.config.save()
+        mode_colors = {"agent": THEME_SUCCESS, "ask": THEME_WARN}
+        mc = mode_colors.get(requested_mode, THEME_DIM)
+        ctx.console.print(f"  [{THEME_SUCCESS}]✓[/{THEME_SUCCESS}] Mode → [{mc}]{requested_mode}[/{mc}]")
+        if old_mode != requested_mode and len(ctx.agent.conversation) > 2:
+            ctx.console.print(f"  [{THEME_DIM}]Tip: conversation preserved — use /reset to start fresh[/{THEME_DIM}]")
     else:
-        ctx.console.print(f"  [yellow]Unknown: {args[0]}[/yellow]")
+        ctx.console.print(f"  [{THEME_WARN}]Unknown mode: {args[0]} (use: agent | ask)[/{THEME_WARN}]")
     return ""
 
 
 def _cmd_save(ctx: CommandContext, args: list[str]) -> str:
     if not ctx.agent.conversation:
-        ctx.console.print("  [dim]Nothing to save (empty conversation)[/dim]")
+        ctx.console.print(f"  [{THEME_DIM}]Nothing to save (empty conversation)[/{THEME_DIM}]")
         return ""
 
     name = args[0] if args else None
     metadata = {"mode": ctx.agent.mode, "model": ctx.config.active_model}
     filename = save_session(ctx.agent.conversation, name, metadata)
-    ctx.console.print(f"  [green]✓ Saved session: {filename}[/green]")
+    ctx.console.print(f"  [{THEME_SUCCESS}]✓ Saved session: {filename}[/{THEME_SUCCESS}]")
     return ""
 
 
@@ -364,14 +389,14 @@ def _cmd_load(ctx: CommandContext, args: list[str]) -> str:
     if not args:
         sessions = list_sessions(5)
         if not sessions:
-            ctx.console.print("  [dim]No saved sessions[/dim]")
+            ctx.console.print(f"  [{THEME_DIM}]No saved sessions[/{THEME_DIM}]")
         else:
             ctx.console.print("  [bold]Recent sessions:[/bold]")
             for session in sessions:
                 ctx.console.print(
                     f"    {session['name']} ({session['messages']} msgs, {session['created_at']})"
                 )
-            ctx.console.print("  [dim]Use /load <name> to load[/dim]")
+            ctx.console.print(f"  [{THEME_DIM}]Use /load <name> to load[/{THEME_DIM}]")
         return ""
 
     data = load_session(args[0])
@@ -379,12 +404,12 @@ def _cmd_load(ctx: CommandContext, args: list[str]) -> str:
         ctx.agent.conversation = data.get("conversation", [])
         restored = _restore_session_metadata(ctx, data)
         ctx.console.print(
-            f"  [green]✓ Loaded: {data.get('name')} ({len(ctx.agent.conversation)} messages)[/green]"
+            f"  [{THEME_SUCCESS}]✓ Loaded: {data.get('name')} ({len(ctx.agent.conversation)} messages)[/{THEME_SUCCESS}]"
         )
         if restored:
-            ctx.console.print(f"  [dim]↳ restored {', '.join(restored)}[/dim]")
+            ctx.console.print(f"  [{THEME_DIM}]↳ restored {', '.join(restored)}[/{THEME_DIM}]")
     else:
-        ctx.console.print(f"  [yellow]Session not found: {args[0]}[/yellow]")
+        ctx.console.print(f"  [{THEME_WARN}]Session not found: {args[0]}[/{THEME_WARN}]")
     return ""
 
 
@@ -392,16 +417,17 @@ def _cmd_sessions(ctx: CommandContext, args: list[str]) -> str:
     _ = args
     sessions = list_sessions(10)
     if not sessions:
-        ctx.console.print("  [dim]No saved sessions[/dim]")
+        ctx.console.print(f"  [{THEME_DIM}]No saved sessions[/{THEME_DIM}]")
         return ""
 
-    table = Table(border_style=THEME_ACCENT)
-    table.add_column("Name", style="bold")
-    table.add_column("Messages")
-    table.add_column("Created")
+    table = Table(border_style=THEME_BORDER)
+    table.add_column("Name", style=f"bold {THEME_ACCENT}")
+    table.add_column("Messages", style="#E6EDF3")
+    table.add_column("Created", style=THEME_DIM)
     for session in sessions:
         table.add_row(session["name"], str(session["messages"]), session["created_at"])
-    ctx.console.print(Panel(table, title="[bold]Saved Sessions[/bold]", border_style=THEME_ACCENT))
+    ctx.console.print(Panel(table, title=f"[bold {THEME_ACCENT}] Sessions [/bold {THEME_ACCENT}]",
+                            title_align="left", border_style=THEME_BORDER))
     return ""
 
 
@@ -414,12 +440,13 @@ def _cmd_config(ctx: CommandContext, args: list[str]) -> str:
 def _cmd_stats(ctx: CommandContext, args: list[str]) -> str:
     _ = args
     stats = ctx.agent.get_stats()
-    table = Table(show_header=False, border_style=THEME_ACCENT, padding=(0, 2))
-    table.add_column("Metric", style="bold")
-    table.add_column("Value")
+    table = Table(show_header=False, border_style=THEME_BORDER, padding=(0, 2), box=None)
+    table.add_column("Metric", style=f"bold {THEME_ACCENT}", min_width=16)
+    table.add_column("Value", style="#E6EDF3")
     for key, value in stats.items():
         table.add_row(key, f"{value:,}" if isinstance(value, int) else str(value))
-    ctx.console.print(Panel(table, title="[bold]Session[/bold]", border_style=THEME_ACCENT))
+    ctx.console.print(Panel(table, title=f"[bold {THEME_ACCENT}] Session [/bold {THEME_ACCENT}]",
+                            title_align="left", border_style=THEME_BORDER, padding=(0, 1)))
     return ""
 
 
@@ -427,9 +454,9 @@ def _cmd_compact(ctx: CommandContext, args: list[str]) -> str:
     _ = args
     count = ctx.agent.compact_conversation()
     if count > 0:
-        ctx.console.print(f"  [green]✓ Compacted {count} old messages into summary[/green]")
+        ctx.console.print(f"  [{THEME_SUCCESS}]✓ Compacted {count} old messages into summary[/{THEME_SUCCESS}]")
     else:
-        ctx.console.print("  [dim]Nothing to compact (≤4 messages)[/dim]")
+        ctx.console.print(f"  [{THEME_DIM}]Nothing to compact (≤4 messages)[/{THEME_DIM}]")
     return ""
 
 
@@ -437,12 +464,16 @@ def _cmd_git(ctx: CommandContext, args: list[str]) -> str:
     _ = args
     git = ctx.tools.git
     if not git.available:
-        ctx.console.print("  [yellow]Not a git repository.[/yellow]")
+        ctx.console.print(f"  [{THEME_WARN}]Not a git repository.[/{THEME_WARN}]")
         return ""
 
-    ctx.console.print(f"  [bold]Branch:[/bold] {git.get_current_branch()}")
-    ctx.console.print(f"  [bold]Status:[/bold]\n{git.status_short()}")
-    ctx.console.print(f"  [bold]Recent:[/bold]\n{git.get_log(5)}")
+    ctx.console.print(f"  [bold {THEME_ACCENT}]branch[/bold {THEME_ACCENT}]  {git.get_current_branch()}")
+    ctx.console.print(f"  [bold {THEME_ACCENT}]status[/bold {THEME_ACCENT}]")
+    for line in git.status_short().strip().splitlines():
+        ctx.console.print(f"    [{THEME_DIM}]{line}[/{THEME_DIM}]")
+    ctx.console.print(f"  [bold {THEME_ACCENT}]recent[/bold {THEME_ACCENT}]")
+    for line in git.get_log(5).strip().splitlines():
+        ctx.console.print(f"    [{THEME_DIM}]{line}[/{THEME_DIM}]")
     return ""
 
 
@@ -450,11 +481,11 @@ def _cmd_undo(ctx: CommandContext, args: list[str]) -> str:
     _ = args
     undo = ctx.tools.files.undo
     if not undo.can_undo:
-        ctx.console.print("  [dim]No file changes to undo.[/dim]")
+        ctx.console.print(f"  [{THEME_DIM}]No file changes to undo.[/{THEME_DIM}]")
         return ""
 
     history = undo.get_history(5)
-    ctx.console.print(f"  [dim]Recent changes ({undo.undo_count} total):[/dim]")
+    ctx.console.print(f"  [{THEME_DIM}]Recent changes ({undo.undo_count} total):[/{THEME_DIM}]")
     for index, item in enumerate(history):
         marker = "→" if index == 0 else " "
         ctx.console.print(f"  {marker} {item['operation']}: {item['path']}")
@@ -462,11 +493,11 @@ def _cmd_undo(ctx: CommandContext, args: list[str]) -> str:
         answer = ctx.console.input("  Undo last change? (y/n): ").strip().lower()
         if answer in ("y", "yes"):
             result = undo.undo_last()
-            ctx.console.print(f"  [green]✓ {result}[/green]")
+            ctx.console.print(f"  [{THEME_SUCCESS}]✓ {result}[/{THEME_SUCCESS}]")
         else:
-            ctx.console.print("  [dim]Cancelled[/dim]")
+            ctx.console.print(f"  [{THEME_DIM}]Cancelled[/{THEME_DIM}]")
     except (KeyboardInterrupt, EOFError):
-        ctx.console.print("  [dim]Cancelled[/dim]")
+        ctx.console.print(f"  [{THEME_DIM}]Cancelled[/{THEME_DIM}]")
     return ""
 
 
@@ -484,7 +515,7 @@ def _cmd_web(ctx: CommandContext, args: list[str]) -> str:
                     ctx.agent.web_display = mode
                 else:
                     ctx.console.print(
-                        "  [yellow]Usage: /web [on|off] [brief|summary|full] | /web [brief|summary|full][/yellow]"
+                        "  [{THEME_WARN}]Usage: /web [on|off] [brief|summary|full] | /web [brief|summary|full][/{THEME_WARN}]"
                     )
                     return ""
         elif head in ("brief", "summary", "full"):
@@ -492,14 +523,99 @@ def _cmd_web(ctx: CommandContext, args: list[str]) -> str:
             ctx.agent.web_display = head
         else:
             ctx.console.print(
-                "  [yellow]Usage: /web [on|off] [brief|summary|full] | /web [brief|summary|full][/yellow]"
+                "  [{THEME_WARN}]Usage: /web [on|off] [brief|summary|full] | /web [brief|summary|full][/{THEME_WARN}]"
             )
             return ""
 
     ctx.config.web_enabled = ctx.tools.web_enabled
     ctx.config.save()
-    status = "[green]ON[/green]" if ctx.tools.web_enabled else "[dim]OFF[/dim]"
-    ctx.console.print(f"  Web access: {status} [dim](display: {ctx.agent.web_display})[/dim]")
+    status = f"[{THEME_SUCCESS}]ON[/{THEME_SUCCESS}]" if ctx.tools.web_enabled else f"[{THEME_DIM}]OFF[/{THEME_DIM}]"
+    ctx.console.print(f"  Web access: {status} [{THEME_DIM}](display: {ctx.agent.web_display})[/{THEME_DIM}]")
+    return ""
+
+
+def _cmd_grounding(ctx: CommandContext, args: list[str]) -> str:
+    if not args:
+        ctx.console.print(
+            "  "
+            f"grounded_web_mode=[bold]{ctx.agent.grounded_web_mode}[/bold] "
+            f"retry=[bold]{ctx.agent.grounded_retry}[/bold] "
+            f"citations=[bold]{ctx.agent.grounded_visible_citations}[/bold] "
+            f"context=[bold]{ctx.agent.grounded_context_chars}[/bold]"
+        )
+        ctx.console.print(
+            "  Usage: /grounding <on|off|strict|status> "
+            "| /grounding retry <0-3> | /grounding citations <sources_only|inline> "
+            "| /grounding context <800-40000>"
+        )
+        return ""
+
+    head = args[0].lower()
+    if head in ("status",):
+        return _cmd_grounding(ctx, [])
+
+    if head in ("on", "strict"):
+        ctx.config.grounded_web_mode = "strict"
+        ctx.agent.grounded_web_mode = "strict"
+        ctx.config.save()
+        ctx.console.print(f"  [{THEME_SUCCESS}]✓ grounded web mode → strict[/{THEME_SUCCESS}]")
+        return ""
+
+    if head in ("off",):
+        ctx.config.grounded_web_mode = "off"
+        ctx.agent.grounded_web_mode = "off"
+        ctx.config.save()
+        ctx.console.print(f"  [{THEME_SUCCESS}]✓ grounded web mode → off[/{THEME_SUCCESS}]")
+        return ""
+
+    if head == "retry":
+        if len(args) < 2:
+            ctx.console.print("  [{THEME_WARN}]Usage: /grounding retry <0-3>[/{THEME_WARN}]")
+            return ""
+        try:
+            value = int(args[1])
+        except ValueError:
+            ctx.console.print("  [{THEME_WARN}]Usage: /grounding retry <0-3>[/{THEME_WARN}]")
+            return ""
+        value = max(0, min(3, value))
+        ctx.config.grounded_retry = value
+        ctx.agent.grounded_retry = value
+        ctx.config.save()
+        ctx.console.print(f"  [{THEME_SUCCESS}]✓ grounded retry → {value}[/{THEME_SUCCESS}]")
+        return ""
+
+    if head == "citations":
+        if len(args) < 2 or args[1].lower() not in ("sources_only", "inline"):
+            ctx.console.print("  [{THEME_WARN}]Usage: /grounding citations <sources_only|inline>[/{THEME_WARN}]")
+            return ""
+        mode = args[1].lower()
+        ctx.config.grounded_visible_citations = mode
+        ctx.agent.grounded_visible_citations = mode
+        ctx.config.save()
+        ctx.console.print(f"  [{THEME_SUCCESS}]✓ grounded citations → {mode}[/{THEME_SUCCESS}]")
+        return ""
+
+    if head == "context":
+        if len(args) < 2:
+            ctx.console.print("  [{THEME_WARN}]Usage: /grounding context <800-40000>[/{THEME_WARN}]")
+            return ""
+        try:
+            value = int(args[1])
+        except ValueError:
+            ctx.console.print("  [{THEME_WARN}]Usage: /grounding context <800-40000>[/{THEME_WARN}]")
+            return ""
+        value = max(800, min(40000, value))
+        ctx.config.grounded_context_chars = value
+        ctx.agent.grounded_context_chars = value
+        ctx.config.save()
+        ctx.console.print(f"  [{THEME_SUCCESS}]✓ grounded context chars → {value}[/{THEME_SUCCESS}]")
+        return ""
+
+    ctx.console.print(
+        "  [{THEME_WARN}]Usage: /grounding <on|off|strict|status> "
+        "| /grounding retry <0-3> | /grounding citations <sources_only|inline> "
+        "| /grounding context <800-40000>[/{THEME_WARN}]"
+    )
     return ""
 
 
@@ -510,56 +626,74 @@ def _cmd_display(ctx: CommandContext, args: list[str]) -> str:
             f"  | web: [bold]{ctx.agent.web_display}[/bold]"
             f"  | answer: [bold]{ctx.agent.answer_style}[/bold]"
             f"  | stream: [bold]{ctx.agent.stream_profile}[/bold]"
+            f"  | tools: [bold]{ctx.agent.tool_parallelism}[/bold]"
+            f"  | grounding: [bold]{ctx.agent.grounded_web_mode}[/bold]"
         )
-        ctx.console.print("  Usage: /display thinking <off|summary|full> | /display web <brief|summary|full> | /display answer <concise|balanced|detailed> | /display stream <stable|smooth|ultra>")
+        ctx.console.print("  Usage: /display thinking <off|summary|full> | /display web <brief|summary|full> | /display answer <concise|balanced|detailed> | /display stream <stable|smooth|ultra> | /display tools <1-12>")
         return ""
 
     target = args[0].lower()
     if target == "thinking":
         if len(args) < 2 or args[1].lower() not in ("off", "summary", "full"):
-            ctx.console.print("  [yellow]Usage: /display thinking <off|summary|full>[/yellow]")
+            ctx.console.print("  [{THEME_WARN}]Usage: /display thinking <off|summary|full>[/{THEME_WARN}]")
             return ""
         mode = args[1].lower()
         ctx.config.reasoning_display = mode
         ctx.agent.reasoning_display = mode
         ctx.config.save()
-        ctx.console.print(f"  [green]✓ thinking display → {mode}[/green]")
+        ctx.console.print(f"  [{THEME_SUCCESS}]✓ thinking display → {mode}[/{THEME_SUCCESS}]")
         return ""
 
     if target == "web":
         if len(args) < 2 or args[1].lower() not in ("brief", "summary", "full"):
-            ctx.console.print("  [yellow]Usage: /display web <brief|summary|full>[/yellow]")
+            ctx.console.print("  [{THEME_WARN}]Usage: /display web <brief|summary|full>[/{THEME_WARN}]")
             return ""
         mode = args[1].lower()
         ctx.config.web_display = mode
         ctx.agent.web_display = mode
         ctx.config.save()
-        ctx.console.print(f"  [green]✓ web display → {mode}[/green]")
+        ctx.console.print(f"  [{THEME_SUCCESS}]✓ web display → {mode}[/{THEME_SUCCESS}]")
         return ""
 
     if target == "answer":
         if len(args) < 2 or args[1].lower() not in ("concise", "balanced", "detailed"):
-            ctx.console.print("  [yellow]Usage: /display answer <concise|balanced|detailed>[/yellow]")
+            ctx.console.print("  [{THEME_WARN}]Usage: /display answer <concise|balanced|detailed>[/{THEME_WARN}]")
             return ""
         style = args[1].lower()
         ctx.config.answer_style = style
         ctx.agent.answer_style = style
         ctx.config.save()
-        ctx.console.print(f"  [green]✓ answer style → {style}[/green]")
+        ctx.console.print(f"  [{THEME_SUCCESS}]✓ answer style → {style}[/{THEME_SUCCESS}]")
         return ""
 
     if target == "stream":
         if len(args) < 2 or args[1].lower() not in ("stable", "smooth", "ultra"):
-            ctx.console.print("  [yellow]Usage: /display stream <stable|smooth|ultra>[/yellow]")
+            ctx.console.print("  [{THEME_WARN}]Usage: /display stream <stable|smooth|ultra>[/{THEME_WARN}]")
             return ""
         profile = args[1].lower()
         ctx.config.stream_profile = profile
         ctx.agent.stream_profile = profile
         ctx.config.save()
-        ctx.console.print(f"  [green]✓ stream profile → {profile}[/green]")
+        ctx.console.print(f"  [{THEME_SUCCESS}]✓ stream profile → {profile}[/{THEME_SUCCESS}]")
         return ""
 
-    ctx.console.print("  [yellow]Usage: /display thinking <off|summary|full> | /display web <brief|summary|full> | /display answer <concise|balanced|detailed> | /display stream <stable|smooth|ultra>[/yellow]")
+    if target == "tools":
+        if len(args) < 2:
+            ctx.console.print("  [{THEME_WARN}]Usage: /display tools <1-12>[/{THEME_WARN}]")
+            return ""
+        try:
+            value = int(args[1])
+        except ValueError:
+            ctx.console.print("  [{THEME_WARN}]Usage: /display tools <1-12>[/{THEME_WARN}]")
+            return ""
+        value = max(1, min(12, value))
+        ctx.config.tool_parallelism = value
+        ctx.agent.tool_parallelism = value
+        ctx.config.save()
+        ctx.console.print(f"  [{THEME_SUCCESS}]✓ tool parallelism → {value}[/{THEME_SUCCESS}]")
+        return ""
+
+    ctx.console.print(f"  [{THEME_WARN}]Usage: /display thinking <off|summary|full> | /display web <brief|summary|full> | /display answer <concise|balanced|detailed> | /display stream <stable|smooth|ultra> | /display tools <1-12>[/{THEME_WARN}]")
     return ""
 
 
@@ -567,26 +701,83 @@ def _cmd_diff(ctx: CommandContext, args: list[str]) -> str:
     _ = args
     git = ctx.tools.git
     if not git.available:
-        ctx.console.print("  [yellow]Not a git repository.[/yellow]")
+        ctx.console.print(f"  [{THEME_WARN}]Not a git repository.[/{THEME_WARN}]")
         return ""
 
     diff = git._run("diff", "--stat").stdout.strip()
     staged = git._run("diff", "--cached", "--stat").stdout.strip()
     if not diff and not staged:
-        ctx.console.print("  [dim]No changes.[/dim]")
+        ctx.console.print(f"  [{THEME_DIM}]No changes.[/{THEME_DIM}]")
         return ""
 
     if staged:
-        ctx.console.print(f"  [bold green]Staged:[/bold green]\n  {staged}")
+        ctx.console.print(f"  [bold {THEME_SUCCESS}]staged[/bold {THEME_SUCCESS}]")
+        for line in staged.splitlines():
+            ctx.console.print(f"    [{THEME_DIM}]{line}[/{THEME_DIM}]")
     if diff:
-        ctx.console.print(f"  [bold yellow]Unstaged:[/bold yellow]\n  {diff}")
+        ctx.console.print(f"  [bold {THEME_WARN}]unstaged[/bold {THEME_WARN}]")
+        for line in diff.splitlines():
+            ctx.console.print(f"    [{THEME_DIM}]{line}[/{THEME_DIM}]")
+    return ""
+
+
+def _cmd_plan(ctx: CommandContext, args: list[str]) -> str:
+    plan = ctx.agent.current_plan
+    if not args:
+        if not plan:
+            ctx.console.print(f"  [{THEME_DIM}]No plan yet. Ask me to draft one first.[/{THEME_DIM}]")
+            return ""
+        ctx.console.print(f"\n  [bold {THEME_ACCENT}]▣ {plan.title}[/bold {THEME_ACCENT}]")
+        status_icons = {"pending": "○", "executing": "◉", "done": "✓", "failed": "✗", "skipped": "–"}
+        status_colors = {"done": THEME_SUCCESS, "failed": THEME_ERROR, "executing": THEME_WARN, "pending": THEME_DIM, "skipped": THEME_DIM}
+        for step in plan.steps:
+            icon = status_icons.get(step.status, "?")
+            color = status_colors.get(step.status, THEME_DIM)
+            ctx.console.print(
+                f"  [{color}]{icon}[/{color}] [{THEME_DIM}]{step.index}.[/{THEME_DIM}] "
+                f"[{THEME_INFO}][{step.action}][/{THEME_INFO}] "
+                f"[#E6EDF3]`{step.target}`[/#E6EDF3] [{THEME_DIM}]— {step.description}[/{THEME_DIM}]"
+            )
+        ctx.console.print()
+        return ""
+
+    if args[0] == "execute":
+        if not plan:
+            ctx.console.print(f"  [{THEME_WARN}]No plan to execute. Ask for a plan first.[/{THEME_WARN}]")
+            return ""
+        if ctx.agent.mode != "agent":
+            ctx.agent.mode = "agent"
+            ctx.config.chat_mode = "agent"
+            ctx.config.save()
+            ctx.console.print(f"  [{THEME_SUCCESS}]✓ Switched to agent mode — executing plan...[/{THEME_SUCCESS}]")
+        else:
+            ctx.console.print(f"  [{THEME_SUCCESS}]✓ Executing plan in agent mode...[/{THEME_SUCCESS}]")
+
+        steps_text = "\n".join(
+            f"{s.index}. [{s.action}] `{s.target}` — {s.description}"
+            for s in plan.steps if s.status == "pending"
+        )
+        instruction = (
+            f"Execute this plan step by step. After each step, verify it succeeded "
+            f"before moving to the next. Report progress as [N/{len(plan.steps)}].\n\n"
+            f"## Plan: {plan.title}\n{steps_text}"
+        )
+        ctx.agent.chat(instruction)
+        return ""
+
+    if args[0] == "clear":
+        ctx.agent.current_plan = None
+        ctx.console.print(f"  [{THEME_SUCCESS}]✓ Plan cleared[/{THEME_SUCCESS}]")
+        return ""
+
+    ctx.console.print(f"  [{THEME_DIM}]Usage: /plan | /plan execute | /plan clear[/{THEME_DIM}]")
     return ""
 
 
 def _cmd_reset(ctx: CommandContext, args: list[str]) -> str:
     _ = args
     ctx.agent.reset()
-    ctx.console.print("  [green]✓ Conversation cleared.[/green]")
+    ctx.console.print(f"  [{THEME_SUCCESS}]✓ Conversation cleared.[/{THEME_SUCCESS}]")
     return ""
 
 
@@ -605,7 +796,9 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "/git": _cmd_git,
     "/undo": _cmd_undo,
     "/web": _cmd_web,
+    "/grounding": _cmd_grounding,
     "/display": _cmd_display,
     "/diff": _cmd_diff,
+    "/plan": _cmd_plan,
     "/reset": _cmd_reset,
 }

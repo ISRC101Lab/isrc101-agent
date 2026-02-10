@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Sequence
+from typing import List, Sequence, Tuple
 
 from prompt_toolkit.completion import Completion, Completer
 from prompt_toolkit.formatted_text import HTML
@@ -12,19 +12,37 @@ from prompt_toolkit.styles import Style
 THEME_ACCENT = "#7FA6D9"
 THEME_PROMPT = "#B7C6D8"
 
+# ── Gradient color system ─────────────────────────
+GRADIENT_STOPS: List[Tuple[int, int, int]] = [
+    (70, 130, 220),    # deep blue
+    (127, 166, 217),   # theme accent
+    (100, 200, 230),   # cyan
+    (87, 219, 156),    # teal-green
+]
+
+
+def _lerp_color(colors: List[Tuple[int, int, int]], t: float) -> Tuple[int, int, int]:
+    """Interpolate through multiple RGB color stops (t in 0..1)."""
+    t = max(0.0, min(1.0, t))
+    n = len(colors) - 1
+    idx = min(int(t * n), n - 1)
+    lt = (t * n) - idx
+    r1, g1, b1 = colors[idx]
+    r2, g2, b2 = colors[idx + 1]
+    return int(r1 + (r2 - r1) * lt), int(g1 + (g2 - g1) * lt), int(b1 + (b2 - b1) * lt)
+
 PTK_STYLE = Style.from_dict({
-    "completion-menu": "bg:default",
-    "completion-menu.completion": "bg:default #C8D8EE",
-    "completion-menu.completion.current": "bg:#1E2834 #E7EEF8",
-    "completion-menu.meta.completion": "bg:default #7AA7E8",
-    "completion-menu.meta.completion.current": "bg:#1E2834 #7AA7E8",
-    "completion-menu.multi-column-meta": "bg:default #7AA7E8",
-    "completion-menu.multi-column-meta.current": "bg:#1E2834 #7AA7E8",
-    "completion-menu.command": "#57DB9C",
-    "completion-menu.args": "#9BB0C9",
-    "completion-menu.description": "#7AA7E8",
+    # ── Completion menu — transparent (inherits terminal bg) ──
+    "completion-menu":                            "bg:default",
+    "completion-menu.completion":                  "bg:default #6E7681",
+    "completion-menu.completion.current":          "bg:default #E6EDF3 bold",
+    "completion-menu.meta.completion":             "bg:default #6E7681",
+    "completion-menu.meta.completion.current":     "bg:default #6E7681",
+    "completion-menu.multi-column-meta":           "bg:default #484F58",
+    "completion-menu.multi-column-meta.current":   "bg:default #484F58",
+    # ── Scrollbar ──
     "scrollbar.background": "bg:default",
-    "scrollbar.button": "bg:default",
+    "scrollbar.button":     "bg:default #484F58",
 })
 
 
@@ -37,86 +55,182 @@ class SlashCommandSpec:
 
 
 SLASH_COMMAND_SPECS: tuple[SlashCommandSpec, ...] = (
-    SlashCommandSpec("/help", "/help", "Show help", ("docs", "usage", "commands")),
-    SlashCommandSpec("/model", "/model", "Switch model", ("llm", "provider", "preset")),
-    SlashCommandSpec("/mode", "/mode", "Switch mode", ("code", "ask", "architect")),
-    SlashCommandSpec("/skills", "/skills", "Manage skills", ("workflow", "plugin", "ability")),
-    SlashCommandSpec("/web", "/web", "Toggle web", ("fetch", "url", "docs")),
-    SlashCommandSpec("/display", "/display", "Display/answer mode", ("thinking", "summary", "verbose", "concise")),
-    SlashCommandSpec("/save", "/save [name]", "Save session", ("session", "history")),
-    SlashCommandSpec("/load", "/load [name]", "Load session", ("session", "history")),
-    SlashCommandSpec("/sessions", "/sessions", "List sessions", ("session", "history")),
-    SlashCommandSpec("/compact", "/compact", "Compact context", ("context", "tokens")),
-    SlashCommandSpec("/undo", "/undo", "Undo last change", ("revert", "rollback")),
-    SlashCommandSpec("/diff", "/diff", "Show git diff", ("git", "changes", "patch")),
-    SlashCommandSpec("/config", "/config", "Show config", ("settings", "model")),
-    SlashCommandSpec("/stats", "/stats", "Session stats", ("tokens", "usage", "cost")),
-    SlashCommandSpec("/git", "/git", "Git status", ("branch", "commit", "status")),
-    SlashCommandSpec("/reset", "/reset", "Reset chat", ("clear", "conversation")),
-    SlashCommandSpec("/quit", "/quit", "Quit", ("exit",)),
+    SlashCommandSpec("/help",     "/help",        "Show available commands and keyboard shortcuts", ("docs", "usage", "commands")),
+    SlashCommandSpec("/model",    "/model",       "Switch between configured model presets", ("llm", "provider", "preset")),
+    SlashCommandSpec("/mode",     "/mode",        "Switch between agent and ask modes", ("agent", "ask", "permissions")),
+    SlashCommandSpec("/plan",     "/plan",        "View current parsed plan or execute it", ("plan", "execute", "steps")),
+    SlashCommandSpec("/skills",   "/skills",      "Enable or disable skill plugins for this session", ("workflow", "plugin", "ability")),
+    SlashCommandSpec("/web",      "/web",         "Toggle web search and URL fetching on or off", ("fetch", "url", "docs")),
+    SlashCommandSpec("/grounding", "/grounding",   "Control strict grounded web-answer validation", ("citations", "evidence", "hallucination")),
+    SlashCommandSpec("/display",  "/display",     "Configure thinking display, answer style, and tool output", ("thinking", "summary", "verbose", "concise", "tools", "parallel")),
+    SlashCommandSpec("/save",     "/save [name]", "Save the current conversation to a named session", ("session", "history")),
+    SlashCommandSpec("/load",     "/load [name]", "Restore a previously saved conversation session", ("session", "history")),
+    SlashCommandSpec("/sessions", "/sessions",    "List all saved sessions with message counts", ("session", "history")),
+    SlashCommandSpec("/compact",  "/compact",     "Summarize conversation history to free up context", ("context", "tokens")),
+    SlashCommandSpec("/undo",     "/undo",        "Revert the last file change made by the agent", ("revert", "rollback")),
+    SlashCommandSpec("/diff",     "/diff",        "Show uncommitted changes as a unified diff", ("git", "changes", "patch")),
+    SlashCommandSpec("/config",   "/config",      "Display current configuration and model settings", ("settings", "model")),
+    SlashCommandSpec("/stats",    "/stats",       "Show token usage and cost for this session", ("tokens", "usage", "cost")),
+    SlashCommandSpec("/git",      "/git",         "Show git branch, status, and recent commits", ("branch", "commit", "status")),
+    SlashCommandSpec("/reset",    "/reset",       "Clear conversation history and start fresh", ("clear", "conversation")),
+    SlashCommandSpec("/quit",     "/quit",        "Exit the session (auto-saves conversation)", ("exit",)),
 )
 
 SLASH_COMMANDS = [spec.command for spec in SLASH_COMMAND_SPECS]
-MAX_SLASH_MENU_ITEMS = 16
+MAX_SLASH_MENU_ITEMS = 18
 
 
 def build_banner(version: str) -> str:
     return (
         f"[bold {THEME_ACCENT}]isrc101-agent[/bold {THEME_ACCENT}] "
-        f"[dim]v{version} · AI coding assistant[/dim]"
+        f"[#6E7681]v{version} · AI coding assistant[/#6E7681]"
     )
 
 
-def build_help_text() -> str:
-    usage_width = max(len(spec.usage) for spec in SLASH_COMMAND_SPECS)
-    lines = ["", f"[bold {THEME_ACCENT}]Commands:[/bold {THEME_ACCENT}]"]
+def render_help(console) -> None:
+    """Render a polished help panel using Rich."""
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.text import Text
+    from rich.columns import Columns
+
+    # ── Commands table ──
+    table = Table(
+        show_header=False, show_edge=False, box=None,
+        padding=(0, 1), pad_edge=False,
+    )
+    table.add_column("cmd", min_width=16, style="bold #E6EDF3")
+    table.add_column("desc", style="#8B949E")
+
     for spec in SLASH_COMMAND_SPECS:
-        lines.append(f"  {spec.usage:<{usage_width}}  {spec.description}")
+        table.add_row(spec.usage, spec.description)
 
-    lines.extend([
-        "",
-        f"[bold {THEME_ACCENT}]Tips:[/bold {THEME_ACCENT}]",
-        "  Esc → Enter   Multi-line input (or paste multi-line text)",
-        "  /              Show command menu (prefix + fuzzy)",
-        "  Ctrl-D ×2      Exit safely",
-    ])
-    return "\n".join(lines)
+    console.print()
+    console.print(Panel(
+        table,
+        title=f"[bold {THEME_ACCENT}] Commands [/bold {THEME_ACCENT}]",
+        title_align="left",
+        border_style="#30363D",
+        padding=(1, 2),
+    ))
+
+    # ── Keyboard shortcuts ──
+    keys = Text()
+    shortcuts = [
+        ("Esc+Enter", "multi-line"),
+        ("/", "command menu"),
+        ("Ctrl-C", "cancel"),
+        ("Ctrl-D ×2", "exit"),
+    ]
+    for i, (key, desc) in enumerate(shortcuts):
+        if i > 0:
+            keys.append("  ·  ", style="#6E7681")
+        keys.append(key, style=f"bold {THEME_ACCENT}")
+        keys.append(f" {desc}", style="#8B949E")
+
+    console.print(f"  ", end="")
+    console.print(keys)
+    console.print()
 
 
-HELP_TEXT = build_help_text()
+# Legacy compat — kept for any external references
+HELP_TEXT = ""
 
 
-def make_prompt_html() -> HTML:
+def make_prompt_html(mode: str = "agent") -> HTML:
+    mode_colors = {"agent": "#57DB9C", "ask": "#E3B341"}
+    mc = mode_colors.get(mode, "#8B949E")
     return HTML(
-        f'<style fg="{THEME_PROMPT}">isrc101</style>'
-        f'<style fg="#66788A"> › </style>'
+        f'<style fg="{THEME_ACCENT}" bold="true">isrc101</style>'
+        f'<style fg="#30363D"> </style>'
+        f'<style fg="{mc}">{mode}</style>'
+        f'<style fg="#30363D"> › </style>'
     )
 
 
 def render_startup(console, config) -> None:
+    from rich.panel import Panel
+    from rich.style import Style as RichStyle
+    from rich.table import Table
+    from rich.text import Text
+    from rich.color import Color
+
     preset = config.get_active_preset()
     key = preset.resolve_api_key()
 
-    key_status = "[green]✓[/green]" if key else "[red]✗[/red]"
-    skills_text = ", ".join(config.enabled_skills) if config.enabled_skills else "(none)"
-    web_text = "[green]ON[/green]" if config.web_enabled else "[dim]OFF[/dim]"
+    # ── Gradient ASCII art banner ──
+    logo_lines = [
+        '  ██╗███████╗██████╗  ██████╗ ██╗ ██████╗  ██╗',
+        '  ██║██╔════╝██╔══██╗██╔════╝███║██╔═████╗███║',
+        '  ██║███████╗██████╔╝██║     ╚██║██║██╔██║╚██║',
+        '  ██║╚════██║██╔══██╗██║      ██║████╔╝██║ ██║',
+        '  ██║███████║██║  ██║╚██████╗ ██║╚██████╔╝ ██║',
+        '  ╚═╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═╝ ╚═════╝  ╚═╝',
+    ]
+    max_len = max(len(line) for line in logo_lines)
+
+    console.print()
+    for line in logo_lines:
+        text = Text()
+        for col, ch in enumerate(line):
+            t = col / max(max_len - 1, 1)
+            r, g, b = _lerp_color(GRADIENT_STOPS, t)
+            text.append(ch, style=RichStyle(color=Color.from_rgb(r, g, b), bold=True))
+        console.print(text)
+
+    # Subtitle under logo
+    subtitle = Text()
+    sub_str = "  AI Coding Assistant"
+    for i, ch in enumerate(sub_str):
+        t = i / max(len(sub_str) - 1, 1)
+        r, g, b = _lerp_color(GRADIENT_STOPS, t)
+        subtitle.append(ch, style=RichStyle(color=Color.from_rgb(r, g, b)))
+    version = f"  v{config._version if hasattr(config, '_version') else '1.0.0'}"
+    subtitle.append(version, style="#6E7681")
+    console.print(subtitle)
+    console.print()
+
+    # ── Status info table ──
+    key_status = "[#57DB9C]ready[/#57DB9C]" if key else "[#F85149]missing[/#F85149]"
+    web_text = "[#57DB9C]ON[/#57DB9C]" if config.web_enabled else "[#6E7681]off[/#6E7681]"
+    skills_list = config.enabled_skills
+    skills_text = ", ".join(skills_list) if skills_list else "[#6E7681]none[/#6E7681]"
+    mode_colors = {"agent": "#57DB9C", "ask": "#E3B341"}
+    mode_color = mode_colors.get(config.chat_mode, "#8B949E")
+
+    info = Table.grid(padding=(0, 2))
+    info.add_column(style="#6E7681", min_width=9)
+    info.add_column()
+
+    info.add_row("model", f"[bold]{config.active_model}[/bold] [#6E7681]→[/#6E7681] {preset.model}")
+    info.add_row("mode", f"[{mode_color}]{config.chat_mode}[/{mode_color}]")
+    info.add_row("web", web_text)
+    info.add_row("api key", key_status)
+    info.add_row("context", f"{preset.context_window:,} tokens [#6E7681](max_out={preset.max_tokens:,})[/#6E7681]")
+    if skills_list:
+        info.add_row("skills", skills_text)
+    if preset.api_base:
+        info.add_row("api", f"[#6E7681]{preset.api_base}[/#6E7681]")
+    info.add_row("project", f"{config.project_root}")
 
     console.print(
-        f"[dim]model[/dim] [bold]{config.active_model}[/bold] [dim]→[/dim] {preset.model}"
-        f" [dim]• mode[/dim] {config.chat_mode}"
-        f" [dim]• web[/dim] {web_text}"
-        f" [dim]• answer[/dim] {config.answer_style}"
-        f" [dim]• key[/dim] {key_status}"
+        Panel(
+            info,
+            border_style=THEME_ACCENT,
+            padding=(0, 1),
+        )
     )
-    console.print(
-        f"[dim]context[/dim] {preset.context_window:,} (max_tokens={preset.max_tokens:,})"
-        f" [dim]• skills[/dim] {skills_text}"
+
+    # ── Quick tips ──
+    tips = Text.from_markup(
+        f"[#6E7681]  Type a message to start  ·  "
+        f"[{THEME_ACCENT}]/[/{THEME_ACCENT}] commands  ·  "
+        f"[{THEME_ACCENT}]/help[/{THEME_ACCENT}] reference  ·  "
+        f"[{THEME_ACCENT}]/mode ask[/{THEME_ACCENT}] for read-only  ·  "
+        f"Esc+Enter multi-line  ·  "
+        f"Ctrl-C cancel[/#6E7681]"
     )
-    console.print(f"[dim]project[/dim] {config.project_root}")
-    if preset.api_base:
-        console.print(f"[dim]api[/dim] {preset.api_base}")
-    console.print(f"[dim]config[/dim] {config._config_source}")
-    console.print("[dim]/help · /model · /skills · Ctrl+C to cancel[/dim]")
+    console.print(tips)
     console.print()
 
 
@@ -166,36 +280,28 @@ def _command_sort_key(token: str, spec: SlashCommandSpec, order_map: dict[str, i
 
 
 class SlashCommandCompleter(Completer):
-    """Codex-like compact slash-command palette with prefix+fuzzy matching."""
+    """Full-width slash-command palette — spans the entire terminal."""
 
     def __init__(
         self,
         specs: Sequence[SlashCommandSpec] = SLASH_COMMAND_SPECS,
-        max_items: int = MAX_SLASH_MENU_ITEMS,
+        max_items: int = 18,
     ):
         self.specs = list(specs)
         self.max_items = max_items
         self.order_map = {spec.command: index for index, spec in enumerate(self.specs)}
         self.usage_width = max(len(spec.usage) for spec in self.specs)
 
-    def _usage_fragments(self, spec: SlashCommandSpec):
-        if spec.usage == spec.command:
-            return [("class:completion-menu.command", spec.command)]
-
-        args = spec.usage[len(spec.command):]
-        return [
-            ("class:completion-menu.command", spec.command),
-            ("class:completion-menu.args", args),
-        ]
-
     def _display(self, spec: SlashCommandSpec):
-        left = self._usage_fragments(spec)
-        used_width = len(spec.usage)
-        gap = " " * max(2, self.usage_width - used_width + 1)
-        display = list(left)
-        display.append(("", gap))
-        display.append(("class:completion-menu.description", spec.description))
-        return display
+        """Single row: command + wide gap + description. No right padding."""
+        cmd_text = spec.usage
+        # Wide gap between command and description for clear two-column feel
+        gap = " " * max(4, self.usage_width - len(cmd_text) + 6)
+        return [
+            ("bold #E6EDF3", cmd_text),
+            ("", gap),
+            ("#6E7681", spec.description),
+        ]
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor.lstrip()

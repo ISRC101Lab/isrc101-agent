@@ -20,10 +20,17 @@ from .startup_profiler import StartupProfiler
 from .tools import ToolRegistry
 
 console = Console()
-BANNER = (
-    f"[bold #7FA6D9]isrc101-agent[/bold #7FA6D9] "
-    f"[dim]v{__version__} · AI coding assistant[/dim]"
-)
+
+
+def _normalize_cli_mode(value):
+    if value is None:
+        return None
+    mode = str(value).strip().lower()
+    if mode in ("code", "architect"):
+        return "agent"
+    if mode in ("agent", "ask"):
+        return mode
+    raise click.UsageError("Invalid --mode. Use: agent | ask")
 
 
 @click.group(invoke_without_command=True)
@@ -40,14 +47,13 @@ def cli(ctx):
 @click.option("--api-base", "-b", default=None, help="API base override")
 @click.option("--project-dir", "-d", default=".", help="Project directory")
 @click.option("--auto-confirm", "-y", is_flag=True, help="Auto-confirm all")
-@click.option("--mode", type=click.Choice(["code", "ask", "architect"]), default=None)
+@click.option("--mode", default=None, help="Mode: agent or ask")
 @click.option("--no-git", is_flag=True, help="Disable auto-commit")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
 def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbose):
     """Start an interactive session."""
     profiler = StartupProfiler.from_env()
 
-    console.print(BANNER)
     os.environ.setdefault("PROMPT_TOOLKIT_NO_CPR", "1")
     config = Config.load(project_dir)
     profiler.mark("config.load")
@@ -66,8 +72,9 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
             config.active_model = "_cli"
     if auto_confirm:
         config.auto_confirm = True
-    if mode:
-        config.chat_mode = mode
+    normalized_mode = _normalize_cli_mode(mode)
+    if normalized_mode:
+        config.chat_mode = normalized_mode
     if no_git:
         config.auto_commit = False
     if verbose:
@@ -86,7 +93,7 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
 
     project_root = Path(config.project_root).resolve()
     if not project_root.is_dir():
-        console.print(f"[red]Error: '{project_dir}' is not a valid directory.[/red]")
+        console.print(f"[#F85149]Error: '{project_dir}' is not a valid directory.[/#F85149]")
         sys.exit(1)
     profiler.mark("project.resolve")
 
@@ -108,7 +115,7 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
 
     render_startup(console, config)
     if missing_skills:
-        console.print(f"  [yellow]⚠ Missing skills in config:[/yellow] {', '.join(missing_skills)}")
+        console.print(f"  [#E3B341]⚠ Missing skills in config:[/#E3B341] {', '.join(missing_skills)}")
     profiler.mark("startup.render")
 
     llm = LLMAdapter(**preset.get_llm_kwargs())
@@ -139,9 +146,14 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
         web_display=config.web_display,
         answer_style=config.answer_style,
         stream_profile=config.stream_profile,
+        grounded_web_mode=config.grounded_web_mode,
+        grounded_retry=config.grounded_retry,
+        grounded_visible_citations=config.grounded_visible_citations,
+        grounded_context_chars=config.grounded_context_chars,
         web_preview_lines=config.web_preview_lines,
         web_preview_chars=config.web_preview_chars,
         web_context_chars=config.web_context_chars,
+        tool_parallelism=config.tool_parallelism,
     )
     profiler.mark("agent.init")
 
@@ -185,20 +197,40 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
 
     pending_ctrl_d_exit = False
 
+    # ── Auto-restore previous session ──
+    from .session import load_session, save_session
+
+    auto_session_name = f"auto_{project_root.name}"
+    auto_session = load_session(auto_session_name)
+    if auto_session:
+        msg_count = len(auto_session.get("conversation", []))
+        saved_project = auto_session.get("metadata", {}).get("project_root", "")
+        if saved_project == str(project_root) and msg_count > 0:
+            created = auto_session.get("created_at", "unknown")
+            try:
+                ans = console.input(
+                    f"  [#6E7681]Resume last session? ({msg_count} msgs, {created}) [y/N]: [/#6E7681]"
+                ).strip().lower()
+                if ans in ("y", "yes"):
+                    agent.conversation = auto_session["conversation"]
+                    console.print(f"  [#57DB9C]✓ Resumed ({msg_count} messages)[/#57DB9C]")
+            except (KeyboardInterrupt, EOFError):
+                pass
+
     while True:
         try:
-            prompt_html = make_prompt_html()
+            prompt_html = make_prompt_html(agent.mode)
             user_input = session.prompt(prompt_html, key_bindings=repl_kb).strip()
             pending_ctrl_d_exit = False
         except EOFError:
             if pending_ctrl_d_exit:
-                console.print("\n[dim]Goodbye![/dim]")
+                console.print("\n[#6E7681]Goodbye![/#6E7681]")
                 break
             pending_ctrl_d_exit = True
-            console.print("\n[dim]Press Ctrl-D again to exit.[/dim]")
+            console.print("\n[#6E7681]Press Ctrl-D again to exit.[/#6E7681]")
             continue
         except KeyboardInterrupt:
-            console.print("\n[dim]Goodbye![/dim]")
+            console.print("\n[#6E7681]Goodbye![/#6E7681]")
             break
 
         if not user_input:
@@ -220,27 +252,41 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
         try:
             agent.chat(user_input)
         except KeyboardInterrupt:
-            console.print("\n[yellow]  Interrupted.[/yellow]")
+            console.print("\n[#E3B341]  Interrupted.[/#E3B341]")
         except Exception as error:
-            console.print(f"\n[red]  Error: {error}[/red]")
+            console.print(f"\n[#F85149]  Error: {error}[/#F85149]")
             if config.verbose:
                 import traceback
 
-                console.print(f"[dim]{traceback.format_exc()}[/dim]")
+                console.print(f"[#6E7681]{traceback.format_exc()}[/#6E7681]")
+
+    # ── Auto-save session on exit ──
+    if agent.conversation:
+        metadata = {
+            "mode": agent.mode,
+            "model": config.active_model,
+            "project_root": str(project_root),
+        }
+        try:
+            save_session(agent.conversation, auto_session_name, metadata)
+            console.print(f"  [#6E7681]Session saved ({len(agent.conversation)} messages)[/#6E7681]")
+        except Exception:
+            pass
 
 
 @cli.command()
 @click.argument("message", nargs=-1, required=True)
 @click.option("--model", "-m", default=None)
 @click.option("--project-dir", "-d", default=".")
-@click.option("--mode", type=click.Choice(["code", "ask", "architect"]), default=None)
+@click.option("--mode", default=None, help="Mode: agent or ask")
 def ask(message, model, project_dir, mode):
     """Run a single query."""
     config = Config.load(project_dir)
     if model and model in config.models:
         config.active_model = model
-    if mode:
-        config.chat_mode = mode
+    normalized_mode = _normalize_cli_mode(mode)
+    if normalized_mode:
+        config.chat_mode = normalized_mode
 
     preset = config.get_active_preset()
     preset.apply_to_env()
@@ -269,9 +315,14 @@ def ask(message, model, project_dir, mode):
         web_display=config.web_display,
         answer_style=config.answer_style,
         stream_profile=config.stream_profile,
+        grounded_web_mode=config.grounded_web_mode,
+        grounded_retry=config.grounded_retry,
+        grounded_visible_citations=config.grounded_visible_citations,
+        grounded_context_chars=config.grounded_context_chars,
         web_preview_lines=config.web_preview_lines,
         web_preview_chars=config.web_preview_chars,
         web_context_chars=config.web_context_chars,
+        tool_parallelism=config.tool_parallelism,
     )
     agent.chat(" ".join(message))
 

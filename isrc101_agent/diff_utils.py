@@ -49,9 +49,9 @@ def generate_side_by_side_diff(
     result = []
     for line in diff:
         if line.startswith('- '):
-            result.append(f"[red]- {line[2:]}[/red]")
+            result.append(f"[#F85149]- {line[2:]}[/#F85149]")
         elif line.startswith('+ '):
-            result.append(f"[green]+ {line[2:]}[/green]")
+            result.append(f"[#57DB9C]+ {line[2:]}[/#57DB9C]")
         elif line.startswith('? '):
             continue  # Skip hint lines
         else:
@@ -78,9 +78,9 @@ def format_diff_summary(added: int, removed: int) -> str:
     """Format a summary of changes."""
     parts = []
     if added:
-        parts.append(f"[green]+{added}[/green]")
+        parts.append(f"[#57DB9C]+{added}[/#57DB9C]")
     if removed:
-        parts.append(f"[red]-{removed}[/red]")
+        parts.append(f"[#F85149]-{removed}[/#F85149]")
     return ", ".join(parts) if parts else "no changes"
 
 

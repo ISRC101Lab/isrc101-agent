@@ -26,6 +26,7 @@ class FileOps:
     def __init__(self, project_root: str):
         self.project_root = Path(project_root).resolve()
         self.undo = UndoManager(project_root)
+        self._rg_available: Optional[bool] = None
 
     def _resolve(self, path: str) -> Path:
         p = Path(path)
@@ -314,11 +315,14 @@ class FileOps:
 
     def _has_ripgrep(self) -> bool:
         """Check if ripgrep is available."""
+        if self._rg_available is not None:
+            return self._rg_available
         try:
             subprocess.run(["rg", "--version"], capture_output=True, timeout=2)
-            return True
+            self._rg_available = True
         except (FileNotFoundError, subprocess.TimeoutExpired):
-            return False
+            self._rg_available = False
+        return self._rg_available
 
     def _search_with_rg(self, pattern: str, fp: Path, include: Optional[str],
                         context_lines: int = 0, max_results: int = 80) -> str:

@@ -29,8 +29,7 @@ def tool(description: str, mode: str = "all", category: str = "general",
 
     Args:
         description: Tool description shown to the LLM.
-        mode: "all" (available in all modes), "code" (code mode only),
-              "readonly" (available in ask/architect/code).
+        mode: "all" (available in both modes), "code" (restricted in ask mode).
         category: Grouping label for display.
         confirm: Whether to require user confirmation before execution.
         writes: Whether this tool modifies files (for undo tracking).
@@ -132,14 +131,14 @@ def get_registered_tools() -> Dict[str, Dict[str, Any]]:
     return _TOOL_REGISTRY
 
 
-def get_tool_schemas(web_enabled: bool = False, mode: str = "code") -> List[dict]:
+def get_tool_schemas(web_enabled: bool = False, mode: str = "agent") -> List[dict]:
     """Return filtered JSON Schemas for the current mode."""
     schemas = []
     for name, entry in _TOOL_REGISTRY.items():
         tool_mode = entry["mode"]
 
         # Mode filtering
-        if mode in ("ask", "architect") and tool_mode == "code":
+        if mode == "ask" and tool_mode == "code":
             continue
 
         # Web filtering
