@@ -9,8 +9,7 @@ from prompt_toolkit.completion import Completion, Completer
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.styles import Style
 
-THEME_ACCENT = "#7FA6D9"
-THEME_PROMPT = "#B7C6D8"
+from .theme import ACCENT as THEME_ACCENT, PROMPT as THEME_PROMPT
 
 # ── Gradient color system ─────────────────────────
 GRADIENT_STOPS: List[Tuple[int, int, int]] = [
@@ -97,9 +96,9 @@ def render_help(console) -> None:
     # ── Commands table ──
     table = Table(
         show_header=False, show_edge=False, box=None,
-        padding=(0, 1), pad_edge=False,
+        padding=(0, 2), pad_edge=False,
     )
-    table.add_column("cmd", min_width=16, style="bold #E6EDF3")
+    table.add_column("cmd", style="bold #E6EDF3")
     table.add_column("desc", style="#8B949E")
 
     for spec in SLASH_COMMAND_SPECS:
@@ -138,14 +137,8 @@ HELP_TEXT = ""
 
 
 def make_prompt_html(mode: str = "agent") -> HTML:
-    mode_colors = {"agent": "#57DB9C", "ask": "#E3B341"}
-    mc = mode_colors.get(mode, "#8B949E")
-    return HTML(
-        f'<style fg="{THEME_ACCENT}" bold="true">isrc101</style>'
-        f'<style fg="#30363D"> </style>'
-        f'<style fg="{mc}">{mode}</style>'
-        f'<style fg="#30363D"> › </style>'
-    )
+    """Simple prompt like Claude Code: just '>' """
+    return HTML(f'<style fg="{THEME_PROMPT}">></style> ')
 
 
 def render_startup(console, config) -> None:
@@ -169,22 +162,28 @@ def render_startup(console, config) -> None:
     ]
     max_len = max(len(line) for line in logo_lines)
 
+    # Precompute gradient styles per column (reused across all lines)
+    _gradient_styles = [
+        RichStyle(color=Color.from_rgb(*_lerp_color(GRADIENT_STOPS, col / max(max_len - 1, 1))), bold=True)
+        for col in range(max_len)
+    ]
+
     console.print()
     for line in logo_lines:
         text = Text()
         for col, ch in enumerate(line):
-            t = col / max(max_len - 1, 1)
-            r, g, b = _lerp_color(GRADIENT_STOPS, t)
-            text.append(ch, style=RichStyle(color=Color.from_rgb(r, g, b), bold=True))
+            text.append(ch, style=_gradient_styles[col])
         console.print(text)
 
     # Subtitle under logo
     subtitle = Text()
     sub_str = "  AI Coding Assistant"
+    _sub_styles = [
+        RichStyle(color=Color.from_rgb(*_lerp_color(GRADIENT_STOPS, i / max(len(sub_str) - 1, 1))))
+        for i in range(len(sub_str))
+    ]
     for i, ch in enumerate(sub_str):
-        t = i / max(len(sub_str) - 1, 1)
-        r, g, b = _lerp_color(GRADIENT_STOPS, t)
-        subtitle.append(ch, style=RichStyle(color=Color.from_rgb(r, g, b)))
+        subtitle.append(ch, style=_sub_styles[i])
     version = f"  v{config._version if hasattr(config, '_version') else '1.0.0'}"
     subtitle.append(version, style="#6E7681")
     console.print(subtitle)
@@ -363,6 +362,17 @@ def select_model_interactive(config) -> str:
             active_index = idx
             break
 
+    # Precompute static per-model display data (invariant across keystrokes)
+    _model_cache = []
+    for model in models:
+        provider = _short(model.provider or "-", 9)
+        desc = model.description.strip() if model.description else model.model
+        desc = _short(desc, 30)
+        key_mark = "✓" if model.resolve_api_key() else "·"
+        api_host = _safe_api_host(model.api_base)
+        show_host = api_host if api_host and "localhost" not in api_host else ""
+        _model_cache.append((provider, desc, key_mark, show_host))
+
     query = [""]
     visible = [list(range(len(models)))]
     cursor = [0]
@@ -425,11 +435,7 @@ def select_model_interactive(config) -> str:
 
             pointer = "›" if is_current else " "
             active_mark = "●" if is_active else " "
-            key_mark = "✓" if model.resolve_api_key() else "·"
-            provider = _short(model.provider or "-", 9)
-            desc = model.description.strip() if model.description else model.model
-            desc = _short(desc, 30)
-            api_host = _safe_api_host(model.api_base)
+            provider, desc, key_mark, show_host = _model_cache[model_index]
 
             if is_current:
                 row_style = "bold #E7EEF8"
@@ -439,8 +445,8 @@ def select_model_interactive(config) -> str:
                 row_style = "#C8D8EE"
 
             line = f" {pointer} {active_mark} {model.name:<{name_width}} {provider:<9} {desc:<30} {key_mark}"
-            if api_host and "localhost" not in api_host:
-                line += f"  @{api_host}"
+            if show_host:
+                line += f"  @{show_host}"
             lines.append((row_style, line + "\n"))
 
         lines.append(("#66788A", f"\n {len(visible[0])}/{len(models)} shown • active=● • key=✓"))

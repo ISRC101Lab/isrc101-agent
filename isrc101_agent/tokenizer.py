@@ -1,10 +1,12 @@
 """Token estimation utilities with tiktoken support."""
 
+import json
 import re
 from typing import Optional
 
 _tiktoken_available = False
 _encoder_cache = {}
+_CJK_RE = re.compile(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]')
 
 try:
     import tiktoken
@@ -60,11 +62,10 @@ def _heuristic_estimate(text: str) -> int:
         return 0
 
     # Count CJK characters (Chinese, Japanese, Korean)
-    cjk_pattern = re.compile(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]')
-    cjk_chars = len(cjk_pattern.findall(text))
+    cjk_chars = len(_CJK_RE.findall(text))
 
     # Remove CJK for English estimation
-    non_cjk = cjk_pattern.sub(' ', text)
+    non_cjk = _CJK_RE.sub(' ', text)
 
     # English: ~4 chars per token
     # CJK: ~1.5 chars per token (each CJK char is often 1-2 tokens)
@@ -83,7 +84,6 @@ def estimate_message_tokens(msg: dict, model: Optional[str] = None) -> int:
 
     # Tool calls
     if "tool_calls" in msg:
-        import json
         try:
             tokens += estimate_tokens(json.dumps(msg["tool_calls"]), model)
         except (TypeError, ValueError):

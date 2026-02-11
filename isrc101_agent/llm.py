@@ -92,6 +92,12 @@ You help users understand, modify, and manage their codebase through natural con
 - web_search: Search the web for information (only when web is enabled)
 
 ## Web search strategy (when web is enabled):
+- **Query formulation is critical.** NEVER pass the user's raw question as the search query. Instead:
+  1. Extract 3-6 key terms from the user's question.
+  2. Remove filler words, pronouns, and conversational phrases.
+  3. Use English keywords even if the user asks in Chinese — search engines work better with English.
+  4. Example: User asks "CUDA最新版本支持哪些新特性?" → search query: "CUDA latest version new features release notes"
+  5. Example: User asks "怎么在PyTorch中使用混合精度训练?" → search query: "PyTorch mixed precision training AMP tutorial"
 - **Never assume version numbers or "latest" from your training data.** Your knowledge has a cutoff date and may be outdated.
 - When the user asks about "latest", "newest", "current" versions or recent information:
   1. First use web_search with a neutral query (e.g. "NVIDIA PTX ISA latest version" instead of "PTX 8.7").
@@ -105,6 +111,9 @@ You help users understand, modify, and manage their codebase through natural con
 - **One search round is usually enough.** Do not do follow-up searches for older versions or tangential topics unless the user asks.
 - **Never use bash/curl/wget for web requests.** Always use web_fetch or web_search instead — they produce cleaner output and respect the web display settings.
 - **Minimize tool call rounds.** Typical web query flow: web_search → web_fetch (if needed) → respond. Avoid unnecessary verification steps like curl-checking whether a newer version exists.
+- **NEVER repeat the same web_search query or web_fetch URL.** If you already searched or fetched something, use the cached result. Do not loop.
+- **If evidence is insufficient, say so honestly.** Never fabricate information, version numbers, dates, or URLs. Say "I could not find reliable information on this" rather than guessing.
+- **Do not mix training data with web results.** If the web search returned specific facts, use those facts only. Do not supplement with information from your training data unless clearly labeled as such.
 - When strict web grounding is active, output only the exact structured payload requested by the system for verification.
 """
 
@@ -366,7 +375,7 @@ class LLMAdapter:
         for retry_index in range(MAX_RETRIES + 1):
             full_content = ""
             reasoning_parts = ""
-            tc_data: Dict[int, Dict[str, str]] = {}
+            tc_data: Dict[int, Dict[str, Any]] = {}
             usage = None
 
             try:
@@ -402,14 +411,14 @@ class LLMAdapter:
                         for tc_delta in delta.tool_calls:
                             idx = tc_delta.index
                             if idx not in tc_data:
-                                tc_data[idx] = {"id": "", "name": "", "args": ""}
+                                tc_data[idx] = {"id": "", "name": "", "args": []}
                             if tc_delta.id:
                                 tc_data[idx]["id"] = tc_delta.id
                             if tc_delta.function:
                                 if tc_delta.function.name:
                                     tc_data[idx]["name"] = tc_delta.function.name
                                 if tc_delta.function.arguments:
-                                    tc_data[idx]["args"] += tc_delta.function.arguments
+                                    tc_data[idx]["args"].append(tc_delta.function.arguments)
 
                     # Usage from chunk
                     if hasattr(chunk, "usage") and chunk.usage:
@@ -425,10 +434,11 @@ class LLMAdapter:
                     tool_calls = []
                     for idx in sorted(tc_data.keys()):
                         tc = tc_data[idx]
+                        args_str = "".join(tc["args"])
                         try:
-                            args = json.loads(tc["args"])
+                            args = json.loads(args_str)
                         except json.JSONDecodeError:
-                            args = {"_raw": tc["args"]}
+                            args = {"_raw": args_str}
                         tool_calls.append(ToolCall(id=tc["id"], name=tc["name"], arguments=args))
 
                 # Reasoning content for reasoner models

@@ -7,13 +7,24 @@ import subprocess
 from collections import deque
 from pathlib import Path
 
+from ..errors import ShellBlockedError, ShellTimeoutError
 from ..logger import get_logger
 
 _log = get_logger(__name__)
 
+_CANON_IFS_RE = re.compile(r"\$\{?\s*ifs\s*\}?", re.IGNORECASE)
+_CANON_QUOTES_RE = re.compile(r"[\'\"`\\]")
+_CANON_WHITESPACE_RE = re.compile(r"\s+")
+_EVAL_RE = re.compile(r"\beval\b\s+([^\n]+)", re.IGNORECASE)
+
 
 class ShellExecutor:
     """Execute shell commands while blocking dangerous or obfuscated payloads."""
+
+    # Network commands that should be blocked when web access is disabled.
+    _NET_CMD_RE = re.compile(
+        r"\b(?:curl|wget|http|httpie|aria2c|lynx|w3m|links)\b", re.IGNORECASE
+    )
 
     # Regex signatures for high-risk commands and common exploit chains.
     DANGEROUS_PATTERNS = [
@@ -51,6 +62,7 @@ class ShellExecutor:
     def __init__(self, project_root: str, blocked_commands: list = None, timeout: int = 30):
         self.project_root = Path(project_root).resolve()
         self.timeout = timeout
+        self.web_enabled = False
         self.blocked = blocked_commands or []
         self._dangerous_regexes = [
             re.compile(pattern, re.IGNORECASE) for pattern in self.DANGEROUS_PATTERNS
@@ -63,9 +75,9 @@ class ShellExecutor:
     def _canonicalize_command(command: str) -> str:
         """Normalize shell syntax noise so obfuscated variants are easier to match."""
         normalized = command.lower().replace("\\\n", " ")
-        normalized = re.sub(r"\$\{?\s*ifs\s*\}?", " ", normalized)
-        normalized = re.sub(r"[\'\"`\\]", "", normalized)
-        normalized = re.sub(r"\s+", " ", normalized)
+        normalized = _CANON_IFS_RE.sub(" ", normalized)
+        normalized = _CANON_QUOTES_RE.sub("", normalized)
+        normalized = _CANON_WHITESPACE_RE.sub(" ", normalized)
         return normalized.strip()
 
     @staticmethod
@@ -95,7 +107,7 @@ class ShellExecutor:
 
     def _build_block_rule(self, blocked: str) -> dict:
         canonical = self._canonicalize_command(blocked)
-        compact = re.sub(r"\s+", "", canonical)
+        compact = _CANON_WHITESPACE_RE.sub("", canonical)
         return {
             "raw": blocked,
             "raw_lower": blocked.lower().strip(),
@@ -231,7 +243,7 @@ class ShellExecutor:
     @staticmethod
     def _extract_eval_payloads(command: str) -> list:
         payloads = []
-        for match in re.finditer(r"\beval\b\s+([^\n]+)", command, flags=re.IGNORECASE):
+        for match in _EVAL_RE.finditer(command):
             fragment = match.group(1).strip()
             if fragment:
                 payloads.append(fragment)
@@ -309,7 +321,7 @@ class ShellExecutor:
     def _match_blocked_rules(self, fragment: str):
         cmd_lower = fragment.lower().strip()
         canonical = self._canonicalize_command(fragment)
-        compact = re.sub(r"\s+", "", canonical)
+        compact = _CANON_WHITESPACE_RE.sub("", canonical)
 
         for rule in self._blocked_rules:
             if rule["raw_lower"] and rule["raw_lower"] in cmd_lower:
@@ -328,6 +340,10 @@ class ShellExecutor:
         return None
 
     def _get_block_reason(self, command: str):
+        # Block network commands when web access is disabled.
+        if not self.web_enabled and self._NET_CMD_RE.search(command):
+            return "Web access is disabled. Use /web to enable it before running network commands."
+
         for source, fragment in self._collect_fragments(command):
             reason = self._match_blocked_rules(fragment)
             if reason:
@@ -338,7 +354,7 @@ class ShellExecutor:
         block_reason = self._get_block_reason(command)
         if block_reason:
             _log.warning("Command blocked: %s", block_reason)
-            return f"Blocked: {block_reason}"
+            raise ShellBlockedError(block_reason)
 
         _log.debug("Executing command: %s", command[:100])
 
@@ -352,7 +368,7 @@ class ShellExecutor:
                 env={**os.environ, "TERM": "dumb"},
             )
         except subprocess.TimeoutExpired:
-            return f"Timed out after {self.timeout}s"
+            raise ShellTimeoutError(self.timeout)
         except Exception as e:
             return f"{type(e).__name__}: {e}"
 

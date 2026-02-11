@@ -16,36 +16,16 @@ from .llm import LLMAdapter
 from .session import list_sessions, load_session, save_session
 from .skills import build_skill_instructions, discover_skills
 from .tools import ToolRegistry
-
-THEME_ACCENT = "#7FA6D9"
-THEME_BORDER = "#30363D"
-THEME_DIM = "#6E7681"
-THEME_SUCCESS = "#57DB9C"
-THEME_WARN = "#E3B341"
-THEME_ERROR = "#F85149"
-THEME_INFO = "#58A6FF"
-
-_SLASH_COMMAND_NAMES = [
-    "/help",
-    "/model",
-    "/mode",
-    "/skills",
-    "/web",
-    "/grounding",
-    "/display",
-    "/plan",
-    "/save",
-    "/load",
-    "/sessions",
-    "/compact",
-    "/undo",
-    "/diff",
-    "/config",
-    "/stats",
-    "/git",
-    "/reset",
-    "/quit",
-]
+from .ui import SLASH_COMMANDS
+from .theme import (
+    ACCENT as THEME_ACCENT,
+    BORDER as THEME_BORDER,
+    DIM as THEME_DIM,
+    SUCCESS as THEME_SUCCESS,
+    WARN as THEME_WARN,
+    ERROR as THEME_ERROR,
+    INFO as THEME_INFO,
+)
 
 _SLASH_ALIASES = {"/h": "/help", "/?": "/help", "/exit": "/quit", "/q": "/quit"}
 
@@ -68,14 +48,14 @@ def _resolve_command(raw_cmd: str, console: Console) -> str:
 
     # UX: pressing Enter immediately after '/' should trigger the first command.
     if cmd == "/":
-        return _SLASH_COMMAND_NAMES[0]
+        return SLASH_COMMANDS[0]
 
-    if cmd in _SLASH_COMMAND_NAMES:
+    if cmd in SLASH_COMMANDS:
         return cmd
     if cmd in _SLASH_ALIASES:
         return _SLASH_ALIASES[cmd]
 
-    matches = [candidate for candidate in _SLASH_COMMAND_NAMES if candidate.startswith(cmd)]
+    matches = [candidate for candidate in SLASH_COMMANDS if candidate.startswith(cmd)]
     if matches:
         return matches[0]
 
@@ -447,6 +427,26 @@ def _cmd_stats(ctx: CommandContext, args: list[str]) -> str:
         table.add_row(key, f"{value:,}" if isinstance(value, int) else str(value))
     ctx.console.print(Panel(table, title=f"[bold {THEME_ACCENT}] Session [/bold {THEME_ACCENT}]",
                             title_align="left", border_style=THEME_BORDER, padding=(0, 1)))
+
+    # Tool metrics
+    metrics = ctx.tools.get_metrics()
+    if metrics:
+        ctx.console.print()
+        tool_table = Table(show_header=True, border_style=THEME_BORDER, padding=(0, 1), box=None)
+        tool_table.add_column("Tool", style=f"bold {THEME_ACCENT}", min_width=16)
+        tool_table.add_column("Calls", justify="right", style="#E6EDF3")
+        tool_table.add_column("Errors", justify="right", style=THEME_ERROR)
+        tool_table.add_column("Time (ms)", justify="right", style=THEME_DIM)
+        for tool_name in sorted(metrics.keys()):
+            m = metrics[tool_name]
+            tool_table.add_row(
+                tool_name,
+                f"{m.total_calls}",
+                f"{m.total_errors}" if m.total_errors > 0 else "—",
+                f"{m.total_time_ms:.0f}"
+            )
+        ctx.console.print(Panel(tool_table, title=f"[bold {THEME_ACCENT}] Tool Metrics [/bold {THEME_ACCENT}]",
+                                title_align="left", border_style=THEME_BORDER, padding=(0, 1)))
     return ""
 
 
@@ -541,12 +541,20 @@ def _cmd_grounding(ctx: CommandContext, args: list[str]) -> str:
             f"grounded_web_mode=[bold]{ctx.agent.grounded_web_mode}[/bold] "
             f"retry=[bold]{ctx.agent.grounded_retry}[/bold] "
             f"citations=[bold]{ctx.agent.grounded_visible_citations}[/bold] "
-            f"context=[bold]{ctx.agent.grounded_context_chars}[/bold]"
+            f"context=[bold]{ctx.agent.grounded_context_chars}[/bold] "
+            f"seconds=[bold]{ctx.agent.grounded_search_max_seconds}[/bold] "
+            f"rounds=[bold]{ctx.agent.grounded_search_max_rounds}[/bold] "
+            f"per_round=[bold]{ctx.agent.grounded_search_per_round}[/bold] "
+            f"fallback=[bold]{'on' if ctx.agent.grounded_fallback_to_open_web else 'off'}[/bold] "
+            f"partial=[bold]{'on' if ctx.agent.grounded_partial_on_timeout else 'off'}[/bold]"
         )
         ctx.console.print(
             "  Usage: /grounding <on|off|strict|status> "
             "| /grounding retry <0-3> | /grounding citations <sources_only|inline> "
-            "| /grounding context <800-40000>"
+            "| /grounding context <800-40000> "
+            "| /grounding seconds <20-1200> | /grounding rounds <1-30> "
+            "| /grounding per_round <1-8> | /grounding fallback <on|off> "
+            "| /grounding partial <on|off>"
         )
         return ""
 
@@ -611,10 +619,79 @@ def _cmd_grounding(ctx: CommandContext, args: list[str]) -> str:
         ctx.console.print(f"  [{THEME_SUCCESS}]✓ grounded context chars → {value}[/{THEME_SUCCESS}]")
         return ""
 
+    if head == "seconds":
+        if len(args) < 2:
+            ctx.console.print("  [{THEME_WARN}]Usage: /grounding seconds <20-1200>[/{THEME_WARN}]")
+            return ""
+        try:
+            value = int(args[1])
+        except ValueError:
+            ctx.console.print("  [{THEME_WARN}]Usage: /grounding seconds <20-1200>[/{THEME_WARN}]")
+            return ""
+        value = max(20, min(1200, value))
+        ctx.config.grounded_search_max_seconds = value
+        ctx.agent.grounded_search_max_seconds = value
+        ctx.config.save()
+        ctx.console.print(f"  [{THEME_SUCCESS}]✓ grounded search seconds → {value}[/{THEME_SUCCESS}]")
+        return ""
+
+    if head == "rounds":
+        if len(args) < 2:
+            ctx.console.print("  [{THEME_WARN}]Usage: /grounding rounds <1-30>[/{THEME_WARN}]")
+            return ""
+        try:
+            value = int(args[1])
+        except ValueError:
+            ctx.console.print("  [{THEME_WARN}]Usage: /grounding rounds <1-30>[/{THEME_WARN}]")
+            return ""
+        value = max(1, min(30, value))
+        ctx.config.grounded_search_max_rounds = value
+        ctx.agent.grounded_search_max_rounds = value
+        ctx.config.save()
+        ctx.console.print(f"  [{THEME_SUCCESS}]✓ grounded search rounds → {value}[/{THEME_SUCCESS}]")
+        return ""
+
+    if head == "per_round":
+        if len(args) < 2:
+            ctx.console.print("  [{THEME_WARN}]Usage: /grounding per_round <1-8>[/{THEME_WARN}]")
+            return ""
+        try:
+            value = int(args[1])
+        except ValueError:
+            ctx.console.print("  [{THEME_WARN}]Usage: /grounding per_round <1-8>[/{THEME_WARN}]")
+            return ""
+        value = max(1, min(8, value))
+        ctx.config.grounded_search_per_round = value
+        ctx.agent.grounded_search_per_round = value
+        ctx.config.save()
+        ctx.console.print(f"  [{THEME_SUCCESS}]✓ grounded search per_round → {value}[/{THEME_SUCCESS}]")
+        return ""
+
+    if head in ("fallback", "partial"):
+        if len(args) < 2 or args[1].lower() not in ("on", "off"):
+            ctx.console.print(f"  [{THEME_WARN}]Usage: /grounding {head} <on|off>[/{THEME_WARN}]")
+            return ""
+        enabled = args[1].lower() == "on"
+        if head == "fallback":
+            ctx.config.grounded_fallback_to_open_web = enabled
+            ctx.agent.grounded_fallback_to_open_web = enabled
+            label = "grounded fallback"
+        else:
+            ctx.config.grounded_partial_on_timeout = enabled
+            ctx.agent.grounded_partial_on_timeout = enabled
+            label = "grounded partial"
+        ctx.config.save()
+        mode_label = "on" if enabled else "off"
+        ctx.console.print(f"  [{THEME_SUCCESS}]✓ {label} → {mode_label}[/{THEME_SUCCESS}]")
+        return ""
+
     ctx.console.print(
         "  [{THEME_WARN}]Usage: /grounding <on|off|strict|status> "
         "| /grounding retry <0-3> | /grounding citations <sources_only|inline> "
-        "| /grounding context <800-40000>[/{THEME_WARN}]"
+        "| /grounding context <800-40000> "
+        "| /grounding seconds <20-1200> | /grounding rounds <1-30> "
+        "| /grounding per_round <1-8> | /grounding fallback <on|off> "
+        "| /grounding partial <on|off>[/{THEME_WARN}]"
     )
     return ""
 
@@ -625,11 +702,10 @@ def _cmd_display(ctx: CommandContext, args: list[str]) -> str:
             f"  thinking: [bold]{ctx.agent.reasoning_display}[/bold]"
             f"  | web: [bold]{ctx.agent.web_display}[/bold]"
             f"  | answer: [bold]{ctx.agent.answer_style}[/bold]"
-            f"  | stream: [bold]{ctx.agent.stream_profile}[/bold]"
             f"  | tools: [bold]{ctx.agent.tool_parallelism}[/bold]"
             f"  | grounding: [bold]{ctx.agent.grounded_web_mode}[/bold]"
         )
-        ctx.console.print("  Usage: /display thinking <off|summary|full> | /display web <brief|summary|full> | /display answer <concise|balanced|detailed> | /display stream <stable|smooth|ultra> | /display tools <1-12>")
+        ctx.console.print("  Usage: /display thinking <off|summary|full> | /display web <brief|summary|full> | /display answer <concise|balanced|detailed> | /display tools <1-12>")
         return ""
 
     target = args[0].lower()
@@ -664,17 +740,6 @@ def _cmd_display(ctx: CommandContext, args: list[str]) -> str:
         ctx.agent.answer_style = style
         ctx.config.save()
         ctx.console.print(f"  [{THEME_SUCCESS}]✓ answer style → {style}[/{THEME_SUCCESS}]")
-        return ""
-
-    if target == "stream":
-        if len(args) < 2 or args[1].lower() not in ("stable", "smooth", "ultra"):
-            ctx.console.print("  [{THEME_WARN}]Usage: /display stream <stable|smooth|ultra>[/{THEME_WARN}]")
-            return ""
-        profile = args[1].lower()
-        ctx.config.stream_profile = profile
-        ctx.agent.stream_profile = profile
-        ctx.config.save()
-        ctx.console.print(f"  [{THEME_SUCCESS}]✓ stream profile → {profile}[/{THEME_SUCCESS}]")
         return ""
 
     if target == "tools":

@@ -1,9 +1,23 @@
 """Tool registry: dict-based dispatch replaces manual match/case."""
+import time
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Set
 from .file_ops import FileOps, FileOperationError
 from .shell import ShellExecutor
 from .git_ops import GitOps
 from .web_ops import WebOps, WebOpsError
+from ..errors import (
+    AgentError, ToolError, ShellBlockedError, ShellTimeoutError,
+    WebAccessDisabledError,
+)
+
+
+@dataclass
+class ToolMetrics:
+    """Accumulated metrics for a single tool."""
+    total_calls: int = 0
+    total_errors: int = 0
+    total_time_ms: float = 0.0
 
 
 class _ToolEntry:
@@ -50,9 +64,21 @@ class ToolRegistry:
         self.git = GitOps(project_root, commit_prefix=commit_prefix)
         self.web = WebOps(tavily_api_key=tavily_api_key)
         self._web_enabled = False
-        self.mode = "agent"
+        self._mode = "agent"
         self._tools: Dict[str, _ToolEntry] = {}
+        self._metrics: Dict[str, ToolMetrics] = {}
+        self._schemas_cache: list = None
+        self._schemas_cache_key: tuple = None
         self._register_tools()
+
+    @property
+    def mode(self):
+        return self._mode
+
+    @mode.setter
+    def mode(self, value):
+        self._mode = value
+        self._schemas_cache = None
 
     def _register_tools(self):
         """Register all tools — single source of truth for schema + handler."""
@@ -196,12 +222,12 @@ class ToolRegistry:
 
     def _handle_web_fetch(self, url: str) -> str:
         if not self._web_enabled:
-            return "Web access is disabled. Use /web to enable it."
+            raise WebAccessDisabledError()
         return self.web.fetch(url)
 
     def _handle_web_search(self, query: str, max_results: int = 5, domains=None) -> str:
         if not self._web_enabled:
-            return "Web access is disabled. Use /web to enable it."
+            raise WebAccessDisabledError()
         if not self.web.search_available:
             return "No search backend available. Install: pip install ddgs"
         domain_list = None
@@ -225,19 +251,24 @@ class ToolRegistry:
     @web_enabled.setter
     def web_enabled(self, value: bool):
         self._web_enabled = value
+        self.shell.web_enabled = value
+        self._schemas_cache = None
 
     @property
     def schemas(self) -> List[dict]:
-        """Return filtered JSON Schemas for the current mode."""
+        """Return filtered JSON Schemas for the current mode (cached)."""
+        key = (self._mode, self._web_enabled)
+        if self._schemas_cache is not None and self._schemas_cache_key == key:
+            return self._schemas_cache
         result = []
         for name, entry in self._tools.items():
-            # Mode filtering
-            if self.mode == "ask" and entry.mode == "code":
+            if self._mode == "ask" and entry.mode == "code":
                 continue
-            # Web filtering
             if not self._web_enabled and name in ("web_fetch", "web_search"):
                 continue
             result.append(entry.schema)
+        self._schemas_cache = result
+        self._schemas_cache_key = key
         return result
 
     def execute(self, tool_name: str, arguments: Dict[str, Any]) -> str:
@@ -250,16 +281,49 @@ class ToolRegistry:
         if self.mode == "ask" and entry.mode == "code":
             return f"Tool '{tool_name}' is disabled in mode '{self.mode}'."
 
+        # Initialize metrics for this tool if needed
+        if tool_name not in self._metrics:
+            self._metrics[tool_name] = ToolMetrics()
+
+        metrics = self._metrics[tool_name]
+        metrics.total_calls += 1
+        t0 = time.perf_counter()
+        is_error = False
+
         try:
-            return entry.handler(**arguments)
+            result = entry.handler(**arguments)
+        except ShellBlockedError as e:
+            is_error = True
+            result = str(e)
+        except ShellTimeoutError as e:
+            is_error = True
+            result = str(e)
+        except WebAccessDisabledError as e:
+            is_error = True
+            result = str(e)
         except FileOperationError as e:
-            return f"Error: {e}"
+            is_error = True
+            result = f"Error: {e}"
         except WebOpsError as e:
-            return f"Web error: {e}"
+            is_error = True
+            result = f"Web error: {e}"
         except KeyError as e:
-            return f"Missing argument: {e}"
+            is_error = True
+            result = f"Missing argument: {e}"
         except Exception as e:
-            return f"{tool_name} error: {type(e).__name__}: {e}"
+            is_error = True
+            result = f"{tool_name} error: {type(e).__name__}: {e}"
+        finally:
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            metrics.total_time_ms += elapsed_ms
+            if is_error:
+                metrics.total_errors += 1
+
+        return result
+
+    def get_metrics(self) -> Dict[str, ToolMetrics]:
+        """Return accumulated metrics for all tools."""
+        return dict(self._metrics)
 
     WRITE_TOOLS = {"create_file", "write_file", "str_replace", "delete_file"}
     CONFIRM_TOOLS = {"bash"}

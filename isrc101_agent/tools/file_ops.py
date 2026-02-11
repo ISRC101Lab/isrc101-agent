@@ -163,56 +163,90 @@ class FileOps:
         if not fp.is_dir():
             raise FileOperationError(f"Not a directory: {path}")
 
-        total_files = total_dirs = 0
-        for root, dirs, files in os.walk(fp):
-            dirs[:] = [d for d in dirs if d not in self.SKIP_DIRS and not d.startswith(".")]
-            total_dirs += len(dirs)
-            total_files += len(files)
-
-        lines = []
         try:
             rel = fp.relative_to(self.project_root)
         except ValueError:
             rel = fp
-        lines.append(f"{rel or '.'}/ ({total_files} files, {total_dirs} dirs)")
 
+        # Lightweight count first (os.walk only, no rendering)
+        total_files, total_dirs = self._count_tree_items(fp)
+
+        # Reduce depth for large projects to keep output manageable
         effective_depth = max_depth
-        if total_files > 200 and max_depth > 2:
-            effective_depth = 2
-        elif total_files > 500 and max_depth > 1:
+        if total_files > 500 and max_depth > 1:
             effective_depth = 1
+        elif total_files > 200 and max_depth > 2:
+            effective_depth = 2
 
-        self._tree(fp, lines, "", 0, effective_depth)
+        # Single render pass at the chosen depth
+        lines = []
+        include_child_counts = total_files <= 5000
+        self._tree(fp, lines, "", 0, effective_depth,
+                   include_child_counts=include_child_counts)
+
+        header = f"{rel or '.'}/ ({total_files} files, {total_dirs} dirs)"
+        result = [header] + lines
 
         if path == "." or fp == self.project_root:
             summary = self._project_summary(fp)
             if summary:
-                lines.append(f"\nProject: {summary}")
-        return "\n".join(lines)
+                result.append(f"\nProject: {summary}")
+        return "\n".join(result)
 
-    def _tree(self, d: Path, lines: list, prefix: str, depth: int, max_depth: int):
+    def _tree(self, d: Path, lines: list, prefix: str, depth: int, max_depth: int, include_child_counts: bool = True):
+        """Render tree lines, return (total_files, total_dirs) for the entire subtree."""
         if depth >= max_depth:
-            return
+            # Count remaining items without rendering
+            f_count = d_count = 0
+            for _, dirs, files in os.walk(d):
+                dirs[:] = [dd for dd in dirs if dd not in self.SKIP_DIRS and not dd.startswith(".")]
+                d_count += len(dirs)
+                f_count += len(files)
+            return f_count, d_count
         try:
             entries = sorted(d.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
         except PermissionError:
-            return
+            return 0, 0
         entries = [e for e in entries if not e.name.startswith(".") and e.name not in self.SKIP_DIRS]
+        total_files = 0
+        total_dirs = 0
         for i, entry in enumerate(entries):
             last = i == len(entries) - 1
             conn = "└── " if last else "├── "
             ext_pre = "    " if last else "│   "
             if entry.is_dir():
-                try:
-                    children = sum(1 for _ in entry.iterdir()
-                                   if not _.name.startswith(".") and _.name not in self.SKIP_DIRS)
-                except PermissionError:
-                    children = "?"
-                lines.append(f"{prefix}{conn}{entry.name}/ ({children})")
-                self._tree(entry, lines, prefix + ext_pre, depth + 1, max_depth)
+                total_dirs += 1
+                if include_child_counts:
+                    children = self._count_children(entry)
+                    lines.append(f"{prefix}{conn}{entry.name}/ ({children})")
+                else:
+                    lines.append(f"{prefix}{conn}{entry.name}/")
+                sub_f, sub_d = self._tree(entry, lines, prefix + ext_pre, depth + 1, max_depth, include_child_counts=include_child_counts)
+                total_files += sub_f
+                total_dirs += sub_d
             else:
+                total_files += 1
                 sz = self._fmtsize(entry.stat().st_size)
                 lines.append(f"{prefix}{conn}{entry.name} ({sz})")
+        return total_files, total_dirs
+
+    def _count_tree_items(self, root: Path) -> Tuple[int, int]:
+        total_files = total_dirs = 0
+        for _, dirs, files in os.walk(root):
+            dirs[:] = [d for d in dirs if d not in self.SKIP_DIRS and not d.startswith(".")]
+            total_dirs += len(dirs)
+            total_files += len(files)
+        return total_files, total_dirs
+
+    def _count_children(self, entry: Path):
+        try:
+            return sum(
+                1
+                for child in entry.iterdir()
+                if not child.name.startswith(".") and child.name not in self.SKIP_DIRS
+            )
+        except PermissionError:
+            return "?"
 
     def _project_summary(self, root: Path) -> str:
         markers = {
@@ -385,7 +419,7 @@ class FileOps:
         return self._format_search_output(result.stdout)
 
     def _format_search_output(self, stdout: str, max_results: int = 80) -> str:
-        """Format search output grouped by file with truncation."""
+        """Format search output with round-robin distribution across files."""
         output = stdout.replace(str(self.project_root) + "/", "")
         raw_lines = output.strip().splitlines()
         if not raw_lines:
@@ -403,17 +437,36 @@ class FileOps:
                 groups.setdefault("(other)", []).append(line)
 
         total_matches = len(raw_lines)
+
+        # Round-robin: take 5 lines per file per round until max_results
         result_lines = []
         shown = 0
-        for fname, file_lines in groups.items():
-            if shown >= max_results:
-                break
-            result_lines.append(f"\n── {fname} ({len(file_lines)} matches) ──")
-            for fl in file_lines:
+        per_round = 5
+        file_names = list(groups.keys())
+        file_offsets = {fname: 0 for fname in file_names}
+
+        while shown < max_results and any(file_offsets[f] < len(groups[f]) for f in file_names):
+            for fname in file_names:
                 if shown >= max_results:
                     break
-                result_lines.append(fl)
-                shown += 1
+                offset = file_offsets[fname]
+                file_lines = groups[fname]
+                if offset >= len(file_lines):
+                    continue
+
+                # Add file header if this is the first batch from this file
+                if offset == 0:
+                    result_lines.append(f"\n── {fname} ({len(file_lines)} matches) ──")
+
+                # Take up to per_round lines from this file
+                batch_end = min(offset + per_round, len(file_lines), offset + (max_results - shown))
+                for i in range(offset, batch_end):
+                    result_lines.append(file_lines[i])
+                    shown += 1
+                    if shown >= max_results:
+                        break
+
+                file_offsets[fname] = batch_end
 
         header = f"Found {total_matches} match(es) in {len(groups)} file(s)"
         if total_matches > max_results:

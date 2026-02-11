@@ -5,6 +5,7 @@ Command: isrc run
 """
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -103,6 +104,7 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
     skill_prompt, _, missing_skills = build_skill_instructions(skills, config.enabled_skills)
     profiler.mark("skills.prompt")
 
+    from .theme import DIM, SEPARATOR, SUCCESS
     from .ui import (
         MAX_SLASH_MENU_ITEMS,
         PTK_STYLE,
@@ -145,14 +147,20 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
         reasoning_display=config.reasoning_display,
         web_display=config.web_display,
         answer_style=config.answer_style,
-        stream_profile=config.stream_profile,
         grounded_web_mode=config.grounded_web_mode,
         grounded_retry=config.grounded_retry,
         grounded_visible_citations=config.grounded_visible_citations,
         grounded_context_chars=config.grounded_context_chars,
+        grounded_search_max_seconds=config.grounded_search_max_seconds,
+        grounded_search_max_rounds=config.grounded_search_max_rounds,
+        grounded_search_per_round=config.grounded_search_per_round,
+        grounded_official_domains=config.grounded_official_domains,
+        grounded_fallback_to_open_web=config.grounded_fallback_to_open_web,
+        grounded_partial_on_timeout=config.grounded_partial_on_timeout,
         web_preview_lines=config.web_preview_lines,
         web_preview_chars=config.web_preview_chars,
         web_context_chars=config.web_context_chars,
+        max_web_calls_per_turn=config.max_web_calls_per_turn,
         tool_parallelism=config.tool_parallelism,
     )
     profiler.mark("agent.init")
@@ -206,21 +214,27 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
         msg_count = len(auto_session.get("conversation", []))
         saved_project = auto_session.get("metadata", {}).get("project_root", "")
         if saved_project == str(project_root) and msg_count > 0:
-            created = auto_session.get("created_at", "unknown")
+            created = auto_session.get("metadata", {}).get("created_at", "unknown")
             try:
                 ans = console.input(
-                    f"  [#6E7681]Resume last session? ({msg_count} msgs, {created}) [y/N]: [/#6E7681]"
+                    f"  [{DIM}]Resume last session? ({msg_count} msgs, {created}) [y/N]: [/{DIM}]"
                 ).strip().lower()
                 if ans in ("y", "yes"):
                     agent.conversation = auto_session["conversation"]
-                    console.print(f"  [#57DB9C]✓ Resumed ({msg_count} messages)[/#57DB9C]")
+                    console.print(f"  [{SUCCESS}]✓ Resumed ({msg_count} messages)[/{SUCCESS}]")
             except (KeyboardInterrupt, EOFError):
                 pass
 
+    def _print_separator():
+        cols = shutil.get_terminal_size().columns
+        console.print(f"[{SEPARATOR}]{'─' * cols}[/{SEPARATOR}]")
+
     while True:
         try:
+            _print_separator()
             prompt_html = make_prompt_html(agent.mode)
             user_input = session.prompt(prompt_html, key_bindings=repl_kb).strip()
+            _print_separator()
             pending_ctrl_d_exit = False
         except EOFError:
             if pending_ctrl_d_exit:
@@ -314,14 +328,20 @@ def ask(message, model, project_dir, mode):
         reasoning_display=config.reasoning_display,
         web_display=config.web_display,
         answer_style=config.answer_style,
-        stream_profile=config.stream_profile,
         grounded_web_mode=config.grounded_web_mode,
         grounded_retry=config.grounded_retry,
         grounded_visible_citations=config.grounded_visible_citations,
         grounded_context_chars=config.grounded_context_chars,
+        grounded_search_max_seconds=config.grounded_search_max_seconds,
+        grounded_search_max_rounds=config.grounded_search_max_rounds,
+        grounded_search_per_round=config.grounded_search_per_round,
+        grounded_official_domains=config.grounded_official_domains,
+        grounded_fallback_to_open_web=config.grounded_fallback_to_open_web,
+        grounded_partial_on_timeout=config.grounded_partial_on_timeout,
         web_preview_lines=config.web_preview_lines,
         web_preview_chars=config.web_preview_chars,
         web_context_chars=config.web_context_chars,
+        max_web_calls_per_turn=config.max_web_calls_per_turn,
         tool_parallelism=config.tool_parallelism,
     )
     agent.chat(" ".join(message))

@@ -36,7 +36,6 @@ DEFAULT_ENABLED_SKILLS = [
 REASONING_DISPLAY_MODES = {"off", "summary", "full"}
 WEB_DISPLAY_MODES = {"brief", "summary", "full"}
 ANSWER_STYLE_MODES = {"concise", "balanced", "detailed"}
-STREAM_PROFILES = {"stable", "smooth", "ultra"}
 GROUNDED_WEB_MODES = {"off", "strict"}
 GROUNDED_CITATION_MODES = {"sources_only", "inline"}
 DEFAULT_GROUNDED_OFFICIAL_DOMAINS = [
@@ -117,7 +116,6 @@ class Config:
     reasoning_display: str = "summary"
     web_display: str = "brief"
     answer_style: str = "concise"
-    stream_profile: str = "ultra"
     grounded_web_mode: str = "strict"
     grounded_retry: int = 1
     grounded_visible_citations: str = "sources_only"
@@ -133,6 +131,7 @@ class Config:
     web_preview_lines: int = 2
     web_preview_chars: int = 220
     web_context_chars: int = 4000
+    max_web_calls_per_turn: int = 12
     tool_parallelism: int = 4
     project_root: Optional[str] = None
     _config_source: str = ""
@@ -256,9 +255,6 @@ class Config:
         )
         self.answer_style = self._normalize_answer_style(
             data.get("answer-style", "concise")
-        )
-        self.stream_profile = self._normalize_stream_profile(
-            data.get("stream-profile", "ultra")
         )
         self.grounded_web_mode = self._normalize_grounded_web_mode(
             data.get("grounded-web-mode", "strict")
@@ -386,7 +382,6 @@ class Config:
             "reasoning-display": self.reasoning_display,
             "web-display": self.web_display,
             "answer-style": self.answer_style,
-            "stream-profile": self.stream_profile,
             "grounded-web-mode": self.grounded_web_mode,
             "grounded-retry": self.grounded_retry,
             "grounded-visible-citations": self.grounded_visible_citations,
@@ -457,7 +452,6 @@ class Config:
             "Thinking display": self.reasoning_display,
             "Web display": self.web_display,
             "Answer style": self.answer_style,
-            "Stream profile": self.stream_profile,
             "Grounded web": self.grounded_web_mode,
             "Grounded retry": self.grounded_retry,
             "Grounded citations": self.grounded_visible_citations,
@@ -493,13 +487,6 @@ class Config:
         if style not in ANSWER_STYLE_MODES:
             return "concise"
         return style
-
-    @staticmethod
-    def _normalize_stream_profile(value) -> str:
-        profile = str(value or "ultra").strip().lower()
-        if profile not in STREAM_PROFILES:
-            return "ultra"
-        return profile
 
     @staticmethod
     def _normalize_chat_mode(value) -> str:
