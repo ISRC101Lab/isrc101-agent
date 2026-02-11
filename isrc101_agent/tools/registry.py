@@ -227,7 +227,7 @@ class ToolRegistry:
         if not self._web_enabled:
             raise WebAccessDisabledError()
         if not self.web.search_available:
-            return "No search backend available. Install: pip install ddgs"
+            return "No search backend available. Install: pip install requests"
         domain_list = None
         if isinstance(domains, str):
             domain_list = [item.strip() for item in domains.split(",") if item.strip()]

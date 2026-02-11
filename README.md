@@ -35,7 +35,7 @@ isrc run
 | **多模型切换** | DeepSeek V3/R1、Qwen3-VL、本地模型 (vLLM/llama.cpp)，`/model` 一键切换 |
 | **精准编辑** | `str_replace` 精确替换 + Git 自动提交，不会破坏上下文 |
 | **双模式** | `agent` 模式（读写 + 命令执行）/ `ask` 模式（只读分析与回答） |
-| **联网搜索** | Jina Reader 抓取 + DuckDuckGo / Tavily，`/web on` 开启 |
+| **联网搜索** | Jina Reader 抓取 + Bing 搜索（免费、无需 API key），`/web on` 开启 |
 | **技能系统** | `skills/*/SKILL.md` 可插拔工作流 — git-workflow · code-review · smart-refactor · python-bugfix |
 | **并行工具调用** | 自动并行执行独立只读工具调用，减少往返轮数 |
 | **Codex 风格 UI** | `/` 命令面板、fuzzy 匹配、低干扰配色 |
@@ -90,7 +90,7 @@ isrc101_agent/
     ├── registry.py      工具注册表（dict-based, O(1) 分发）
     ├── file_ops.py      文件操作（read / write / str_replace）
     ├── git_ops.py       Git 操作（auto-commit）
-    └── web_ops.py       联网（Jina Reader + DDG / Tavily）
+    └── web_ops.py       联网（Jina Reader + Bing HTML 搜索）
 ```
 
 **设计要点**
@@ -107,7 +107,6 @@ Python >= 3.10
 litellm · rich · click · prompt_toolkit · pyyaml · requests · tiktoken · python-dotenv
 ```
 
-可选：`pip install isrc101-agent[tavily]`（Tavily AI 搜索）
 
 ## Roadmap
 
