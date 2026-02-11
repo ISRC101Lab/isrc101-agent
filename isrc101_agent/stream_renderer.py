@@ -1,12 +1,14 @@
 """Streaming response rendering — plain-text output, no Rich Live panel."""
 
 import re
+import time
 from typing import Optional, Iterable, Tuple, Any
 
 from rich.console import Console
 from rich.status import Status
 
 from .theme import ACCENT, DIM, WARN, SEPARATOR
+from .rendering import get_icon
 
 __all__ = ["render_stream"]
 
@@ -36,10 +38,7 @@ def render_stream(
     Reasoning tokens are shown via a lightweight Rich Status spinner.
     Returns an LLMResponse (or whatever llm_response_cls is).
     """
-    width = console.width or 120
-    separator = "─" * width
     console.print()
-    console.print(f"[{SEPARATOR}]{separator}[/{SEPARATOR}]")
 
     response = None
     accumulated_text = ""
@@ -49,6 +48,8 @@ def render_stream(
     reasoning_stream_buffer = ""
     last_reasoning_brief = ""
     thinking_status: Optional[Status] = None
+    reasoning_start_time: Optional[float] = None
+    reasoning_token_count = 0
 
     # ── Helpers ──────────────────────────────────
 
@@ -76,21 +77,36 @@ def render_stream(
 
     def _update_thinking_display(msg: str, brief: str) -> None:
         """Shared logic for creating/updating the thinking status spinner."""
-        nonlocal thinking_notice_shown, thinking_status, last_reasoning_brief
+        nonlocal thinking_notice_shown, thinking_status, last_reasoning_brief, reasoning_start_time
         if not thinking_notice_shown or thinking_status is None:
+            # Start timing when reasoning begins
+            reasoning_start_time = time.perf_counter()
+            thinking_icon = get_icon("💭")
             thinking_status = Status(
-                f"  [{DIM}]💭 {msg}[/{DIM}]",
+                f"  [{DIM}]{thinking_icon} {msg}[/{DIM}]",
                 console=console, spinner="dots", spinner_style=ACCENT)
             thinking_status.start()
             thinking_notice_shown = True
         else:
-            thinking_status.update(f"  [{DIM}]💭 {msg}[/{DIM}]")
+            thinking_icon = get_icon("💭")
+            thinking_status.update(f"  [{DIM}]{thinking_icon} {msg}[/{DIM}]")
         last_reasoning_brief = brief
 
     def _stream_reasoning(chunk: str) -> None:
-        nonlocal reasoning_stream_buffer
+        nonlocal reasoning_stream_buffer, reasoning_token_count
         if reasoning_display == "off" or not chunk:
             return
+
+        # Track token count (rough approximation: 1 token ≈ 4 chars)
+        prev_count = reasoning_token_count
+        reasoning_token_count += len(chunk)
+
+        # On first chunk, show initial "Thinking..." message with token estimate
+        if prev_count == 0:
+            estimated_tokens = max(100, len(chunk) // 4)
+            _update_thinking_display(f"Thinking (estimated {estimated_tokens}+ tokens)...", "")
+
+        # Process reasoning content for display
         reasoning_stream_buffer += chunk
         while "\n" in reasoning_stream_buffer:
             line, reasoning_stream_buffer = reasoning_stream_buffer.split("\n", 1)
@@ -137,9 +153,7 @@ def render_stream(
         if text_started:
             console.print()
         content = accumulated_text if accumulated_text else "(interrupted)"
-        reasoning = accumulated_reasoning if accumulated_reasoning else None
-        if reasoning is not None and not reasoning:
-            reasoning = ""
+        reasoning = accumulated_reasoning or None
         if llm_response_cls is not None:
             response = llm_response_cls(content=content, reasoning_content=reasoning)
         console.print(f"\n  [{WARN}]⚠ Stream interrupted by user[/{WARN}]")
@@ -153,18 +167,25 @@ def render_stream(
             _flush_reasoning_buffer()
             console.print()  # trailing newline
 
-        if accumulated_reasoning and accumulated_text:
+        # Show reasoning summary statistics and separator
+        if accumulated_reasoning and accumulated_text and reasoning_display != "off":
             reasoning_lines = accumulated_reasoning.strip().splitlines()
-            if reasoning_display != "off" and len(reasoning_lines) > 3:
-                console.print()
-                console.print(
-                    f"  [{SEPARATOR}]───[/{SEPARATOR}] "
-                    f"[{DIM}]💭 {len(reasoning_lines)} lines of reasoning[/{DIM}] "
-                    f"[{SEPARATOR}]───[/{SEPARATOR}]"
-                )
+            reasoning_tokens = reasoning_token_count // 4  # rough estimate
 
-        # Bottom separator line
-        console.print(f"[{SEPARATOR}]{separator}[/{SEPARATOR}]")
+            # Calculate elapsed time
+            elapsed_time = 0.0
+            if reasoning_start_time is not None:
+                elapsed_time = time.perf_counter() - reasoning_start_time
+
+            # Build summary line
+            console.print()
+            time_str = f"{elapsed_time:.1f}s" if elapsed_time > 0 else "N/A"
+            thinking_icon = get_icon("💭")
+            console.print(
+                f"  [{SEPARATOR}]{'─' * 20}[/{SEPARATOR}] "
+                f"[{DIM}]{thinking_icon} Reasoning: {reasoning_tokens} tokens, {time_str}[/{DIM}] "
+                f"[{SEPARATOR}]{'─' * 20}[/{SEPARATOR}]"
+            )
 
     if response is None:
         raise ConnectionError("Stream ended without completion")

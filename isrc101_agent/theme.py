@@ -1,23 +1,42 @@
-"""Centralized color constants for the entire UI."""
+"""Centralized color constants — backward-compatible wrapper for theme system."""
 
-# ── Core palette ──────────────────────────────────
-ACCENT = "#7FA6D9"
-BORDER = "#30363D"
-DIM = "#6E7681"
-TEXT = "#E6EDF3"
-MUTED = "#8B949E"
-SEPARATOR = "#484F58"
+from .themes import get_theme
 
-# ── Semantic colors ───────────────────────────────
-SUCCESS = "#57DB9C"
-WARN = "#E3B341"
-ERROR = "#F85149"
-INFO = "#58A6FF"
+# Dynamic property access to current theme
+def __getattr__(name: str):
+    """Dynamically get theme attributes from the active theme."""
+    theme = get_theme()
+    if hasattr(theme, name):
+        return getattr(theme, name)
+    raise AttributeError(f"Theme has no attribute '{name}'")
 
-# ── Prompt / input ────────────────────────────────
-PROMPT = "#B7C6D8"
 
-# ── Agent rendering ──────────────────────────────
-AGENT_BORDER = "cyan"
-AGENT_LABEL = "[bold cyan]isrc101[/bold cyan]"
-TOOL_BORDER = "dim"
+# Re-export theme management functions
+from .themes import (
+    get_theme,
+    set_theme,
+    list_themes,
+    get_theme_name,
+)
+
+__all__ = [
+    "get_theme",
+    "set_theme",
+    "list_themes",
+    "get_theme_name",
+    # Color constants (dynamically resolved)
+    "ACCENT",
+    "BORDER",
+    "DIM",
+    "TEXT",
+    "MUTED",
+    "SEPARATOR",
+    "SUCCESS",
+    "WARN",
+    "ERROR",
+    "INFO",
+    "PROMPT",
+    "AGENT_BORDER",
+    "AGENT_LABEL",
+    "TOOL_BORDER",
+]

@@ -1,13 +1,13 @@
 """Tool registry: dict-based dispatch replaces manual match/case."""
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Set
+from typing import Any, Callable, Dict, List
 from .file_ops import FileOps, FileOperationError
 from .shell import ShellExecutor
 from .git_ops import GitOps
 from .web_ops import WebOps, WebOpsError
 from ..errors import (
-    AgentError, ToolError, ShellBlockedError, ShellTimeoutError,
+    ShellBlockedError, ShellTimeoutError,
     WebAccessDisabledError,
 )
 
@@ -57,12 +57,11 @@ _I = lambda desc, **kw: {"type": "integer", "description": desc, **kw}
 
 class ToolRegistry:
     def __init__(self, project_root: str, blocked_commands: list = None,
-                 command_timeout: int = 30, commit_prefix: str = "isrc101: ",
-                 tavily_api_key: str = None):
+                 command_timeout: int = 30, commit_prefix: str = "isrc101: "):
         self.file_ops = FileOps(project_root)
         self.shell = ShellExecutor(project_root, blocked_commands, command_timeout)
         self.git = GitOps(project_root, commit_prefix=commit_prefix)
-        self.web = WebOps(tavily_api_key=tavily_api_key)
+        self.web = WebOps()
         self._web_enabled = False
         self._mode = "agent"
         self._tools: Dict[str, _ToolEntry] = {}
@@ -205,8 +204,7 @@ class ToolRegistry:
         self._tools["web_search"] = T(
             handler=lambda **a: self._handle_web_search(a["query"], a.get("max_results", 5), a.get("domains")),
             schema=S("web_search",
-                     "Search the web and return results. Uses DuckDuckGo (free) by default, "
-                     "Tavily when API key is configured. Available only when /web is ON.",
+                     "Search the web via Bing and return results. Available only when /web is ON.",
                      {"query": _S("Search query"),
                       "max_results": _I("Max results (default 5)", default=5),
                       "domains": _S("Optional comma-separated domains for filtering")},

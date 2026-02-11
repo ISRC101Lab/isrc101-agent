@@ -1,12 +1,12 @@
-"""Web operations: Jina Reader (fetch) + DuckDuckGo/Tavily (search).
+"""Web operations: Jina Reader (fetch) + Bing HTML search.
 
 Jina Reader: prepend https://r.jina.ai/ to any URL → clean markdown, no API key.
-DuckDuckGo: free web search, no API key (default).
-Tavily: AI-optimized search, optional upgrade when API key is set.
+Bing: free web search via plain HTTP GET, no extra libraries needed.
 """
 
 import re
 import time
+from html import unescape as html_unescape
 from typing import Optional, List
 from urllib.parse import urlparse
 
@@ -33,21 +33,6 @@ try:
 except ImportError:
     HAS_REQUESTS = False
 
-try:
-    from ddgs import DDGS
-    HAS_DDG = True
-except ImportError:
-    try:
-        from duckduckgo_search import DDGS
-        HAS_DDG = True
-    except ImportError:
-        HAS_DDG = False
-
-try:
-    from tavily import TavilyClient
-    HAS_TAVILY = True
-except ImportError:
-    HAS_TAVILY = False
 
 
 class WebOpsError(Exception):
@@ -81,17 +66,14 @@ def clean_search_query(query: str) -> str:
 
 
 class WebOps:
-    """Web fetch via Jina Reader, search via DuckDuckGo (free) or Tavily (optional)."""
+    """Web fetch via Jina Reader, search via Bing (plain HTTP)."""
 
     JINA_PREFIX = "https://r.jina.ai/"
     TIMEOUT = 30
     MAX_CONTENT_LENGTH = 40000
 
-    def __init__(self, tavily_api_key: Optional[str] = None):
+    def __init__(self):
         self._session = None
-        self._tavily = None
-        if tavily_api_key and HAS_TAVILY:
-            self._tavily = TavilyClient(api_key=tavily_api_key)
 
     @property
     def available(self) -> bool:
@@ -99,7 +81,7 @@ class WebOps:
 
     @property
     def search_available(self) -> bool:
-        return HAS_DDG or self._tavily is not None
+        return HAS_REQUESTS
 
     def _get_session(self):
         if self._session is None and HAS_REQUESTS:
@@ -114,12 +96,21 @@ class WebOps:
 
     _RETRYABLE_STATUS = {429, 500, 502, 503}
 
-    def _request_with_retry(self, url: str, *, max_retries: int = 2) -> "requests.Response":
-        """GET with exponential backoff on transient errors."""
+    def _request_with_retry(self, url: str, *, max_retries: int = 2,
+                           progress_callback=None) -> "requests.Response":
+        """GET with exponential backoff on transient errors.
+
+        Args:
+            url: URL to fetch
+            max_retries: Maximum number of retry attempts
+            progress_callback: Optional callable() for progress updates
+        """
         session = self._get_session()
         last_exc: Optional[Exception] = None
         for attempt in range(1 + max_retries):
             try:
+                if progress_callback:
+                    progress_callback()
                 resp = session.get(url, timeout=self.TIMEOUT)
                 if resp.status_code not in self._RETRYABLE_STATUS or attempt == max_retries:
                     resp.raise_for_status()
@@ -133,13 +124,20 @@ class WebOps:
                 if attempt == max_retries:
                     raise
             delay = (2 ** attempt)  # 1s → 2s → 4s
+            if progress_callback:
+                progress_callback()
             time.sleep(delay)
         raise last_exc  # unreachable, but satisfies type checker
 
     # ── URL Fetch (Jina Reader) ──
 
-    def fetch(self, url: str) -> str:
-        """Fetch URL via Jina Reader → clean markdown."""
+    def fetch(self, url: str, progress_callback=None) -> str:
+        """Fetch URL via Jina Reader → clean markdown.
+
+        Args:
+            url: URL to fetch
+            progress_callback: Optional callable() for progress updates
+        """
         if not HAS_REQUESTS:
             raise WebOpsError("requests not installed")
 
@@ -149,7 +147,7 @@ class WebOps:
 
         jina_url = self.JINA_PREFIX + url
         try:
-            resp = self._request_with_retry(jina_url)
+            resp = self._request_with_retry(jina_url, progress_callback=progress_callback)
         except requests.RequestException as e:
             raise WebOpsError(f"Jina fetch failed: {e}")
 
@@ -157,121 +155,118 @@ class WebOps:
         text = _MULTI_NEWLINE_RE.sub("\n\n", text)
         return self._truncate(text, url)
 
-    # ── Web Search ──
+    # ── Web Search (Bing HTML) ──
 
-    def search(self, query: str, max_results: int = 5, domains: Optional[List[str]] = None) -> str:
-        """Search web: Tavily (if key set) → DuckDuckGo (free default)."""
+    _BING_URL = "https://cn.bing.com/search"
+    # Regex to extract result blocks from Bing HTML
+    _BING_BLOCK_RE = re.compile(
+        r'<li class="b_algo"[^>]*>(.*?)(?=<li class="b_algo"|</ol>|$)',
+        re.DOTALL,
+    )
+    _BING_TITLE_URL_RE = re.compile(
+        r'<h2[^>]*><a[^>]+href="([^"]+)"[^>]*>(.*?)</a></h2>',
+        re.DOTALL,
+    )
+    _BING_SNIPPET_RE = re.compile(
+        r'<div class="b_caption"[^>]*><p[^>]*>(.*?)</p>',
+        re.DOTALL,
+    )
+
+    def search(self, query: str, max_results: int = 5, domains: Optional[List[str]] = None,
+              progress_callback=None) -> str:
+        """Search web via Bing — plain HTTP, no extra libs.
+
+        Args:
+            query: Search query
+            max_results: Maximum number of results to return
+            domains: Optional list of domains to filter results
+            progress_callback: Optional callable() for progress updates
+        """
+        if not HAS_REQUESTS:
+            raise WebOpsError("requests not installed")
+
         query = clean_search_query(query)
-        # Normalize domains once at entry point
-        normalized_domains = [str(d).strip().lower() for d in (domains or []) if str(d).strip()]
-        if self._tavily:
-            return self._search_tavily(query, max_results, domains=normalized_domains)
-        if HAS_DDG:
-            return self._search_ddg(query, max_results, domains=normalized_domains)
-        raise WebOpsError("No search backend. Install: pip install ddgs")
 
-    def _search_ddg(self, query: str, max_results: int, domains: Optional[List[str]] = None) -> str:
-        """DuckDuckGo search — free, no API key, with retry."""
         effective_query = query
-        if domains:
-            domain_filter = " OR ".join(f"site:{d}" for d in domains)
-            effective_query = f"({query}) ({domain_filter})"
+        normalized_domains = [str(d).strip().lower() for d in (domains or []) if str(d).strip()]
+        if normalized_domains:
+            domain_filter = " OR ".join(f"site:{d}" for d in normalized_domains)
+            effective_query = f"{query} ({domain_filter})"
 
-        last_exc: Optional[Exception] = None
-        for attempt in range(3):
-            try:
-                ddgs = DDGS()
-                results = list(ddgs.text(effective_query, max_results=max_results))
-                break
-            except Exception as e:
-                last_exc = e
-                if attempt < 2:
-                    time.sleep(2 ** attempt)
-        else:
-            raise WebOpsError(f"DuckDuckGo search failed: {last_exc}")
-
-        if domains:
-            results = self._filter_results_by_domains(results, domains)
-
-        return self._format_ddg_results(query, results)
-
-    def _search_tavily(self, query: str, max_results: int, domains: Optional[List[str]] = None) -> str:
-        """Tavily search — AI-optimized, needs API key."""
         try:
-            kwargs = {
-                "query": query,
-                "max_results": max_results,
-                "include_answer": True,
-            }
-            normalized_domains = [d.strip() for d in (domains or []) if str(d).strip()]
-            if normalized_domains:
-                kwargs["include_domains"] = normalized_domains
-            result = self._tavily.search(**kwargs)
-        except Exception as e:
-            raise WebOpsError(f"Tavily search failed: {e}")
+            if progress_callback:
+                progress_callback()
+            resp = requests.get(
+                self._BING_URL,
+                params={"q": effective_query, "setlang": "en"},
+                headers={
+                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
+                },
+                timeout=self.TIMEOUT,
+            )
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            raise WebOpsError(f"Bing search failed: {e}")
 
-        if domains and isinstance(result, dict):
-            result["results"] = self._filter_results_by_domains(result.get("results", []), domains, tavily=True)
+        results = self._parse_bing_html(resp.text, max_results)
 
-        return self._format_tavily_results(query, result)
+        if normalized_domains:
+            results = [
+                r for r in results
+                if self._host_matches_domains(r["url"], normalized_domains)
+            ]
 
-    @staticmethod
-    def _filter_results_by_domains(results, domains: List[str], tavily: bool = False):
-        if not domains:
-            return results
+        return self._format_search_results(query, results)
 
-        filtered = []
-        for item in results:
-            url = ""
-            if tavily and isinstance(item, dict):
-                url = str(item.get("url", ""))
-            elif isinstance(item, dict):
-                url = str(item.get("href", ""))
-            if not url:
+    def _parse_bing_html(self, html: str, max_results: int) -> List[dict]:
+        """Extract title/url/snippet from Bing HTML response."""
+        results = []
+        blocks = self._BING_BLOCK_RE.findall(html)
+
+        for block in blocks:
+            if len(results) >= max_results:
+                break
+
+            # Extract title and URL
+            title_match = self._BING_TITLE_URL_RE.search(block)
+            if not title_match:
                 continue
 
-            host = urlparse(url).netloc.lower()
-            host = host[4:] if host.startswith("www.") else host
-            if any(host == domain or host.endswith(f".{domain}") for domain in domains):
-                filtered.append(item)
-        return filtered
+            url = html_unescape(title_match.group(1)).strip()
+            title = re.sub(r"<[^>]+>", "", title_match.group(2)).strip()
+            title = html_unescape(title)
 
-    # ── Formatters ──
+            # Extract snippet
+            snippet = ""
+            snippet_match = self._BING_SNIPPET_RE.search(block)
+            if snippet_match:
+                snippet = re.sub(r"<[^>]+>", "", snippet_match.group(1)).strip()
+                snippet = html_unescape(snippet)
+
+            if url and title:
+                results.append({"title": title, "url": url, "snippet": snippet})
+
+        return results
 
     @staticmethod
-    def _format_ddg_results(query: str, results: list) -> str:
+    def _host_matches_domains(url: str, domains: List[str]) -> bool:
+        host = urlparse(url).netloc.lower()
+        host = host[4:] if host.startswith("www.") else host
+        return any(host == d or host.endswith(f".{d}") for d in domains)
+
+    @staticmethod
+    def _format_search_results(query: str, results: List[dict]) -> str:
         lines = [f"Search: {query}\n"]
         if not results:
             lines.append("No results found.")
             return "\n".join(lines)
         for i, r in enumerate(results, 1):
-            title = r.get("title", "")
-            url = r.get("href", "")
-            body = r.get("body", "")
-            if len(body) > 500:
-                body = body[:500] + "..."
-            lines.append(f"{i}. [{title}]({url})")
-            if body:
-                lines.append(f"   {body}\n")
-        return "\n".join(lines)
-
-    @staticmethod
-    def _format_tavily_results(query: str, result: dict) -> str:
-        lines = [f"Search: {query}\n"]
-        answer = result.get("answer")
-        if answer:
-            lines.append(f"**Summary:** {answer}\n")
-        for i, r in enumerate(result.get("results", []), 1):
-            title = r.get("title", "")
-            url = r.get("url", "")
-            snippet = r.get("content", "")
-            if len(snippet) > 500:
-                snippet = snippet[:500] + "..."
-            lines.append(f"{i}. [{title}]({url})")
+            snippet = r["snippet"]
+            if len(snippet) > 200:
+                snippet = snippet[:200] + "..."
+            lines.append(f"{i}. [{r['title']}]({r['url']})")
             if snippet:
                 lines.append(f"   {snippet}\n")
-        if not result.get("results") and not answer:
-            lines.append("No results found.")
         return "\n".join(lines)
 
     # ── Helpers ──

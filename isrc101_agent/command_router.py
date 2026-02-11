@@ -17,6 +17,7 @@ from .session import list_sessions, load_session, save_session
 from .skills import build_skill_instructions, discover_skills
 from .tools import ToolRegistry
 from .ui import SLASH_COMMANDS
+from .rendering import get_icon
 from .theme import (
     ACCENT as THEME_ACCENT,
     BORDER as THEME_BORDER,
@@ -82,6 +83,10 @@ def handle_command(
     cmd = _resolve_command(raw_cmd, console)
     if not cmd:
         return ""
+
+    # Record command usage for statistics
+    if config.ui_state:
+        config.ui_state.record_command_usage(cmd)
 
     ctx = CommandContext(console=console, agent=agent, config=config, llm=llm, tools=tools)
     handler = COMMAND_HANDLERS.get(cmd)
@@ -394,26 +399,401 @@ def _cmd_load(ctx: CommandContext, args: list[str]) -> str:
 
 
 def _cmd_sessions(ctx: CommandContext, args: list[str]) -> str:
-    _ = args
-    sessions = list_sessions(10)
-    if not sessions:
-        ctx.console.print(f"  [{THEME_DIM}]No saved sessions[/{THEME_DIM}]")
+    """Enhanced session management with subcommands."""
+    from .session import (
+        list_sessions_enhanced, render_session_timeline,
+        export_session_markdown, add_session_tag, get_session_tags,
+        search_sessions
+    )
+
+    # No args: show list
+    if not args:
+        sessions = list_sessions_enhanced(10)
+        if not sessions:
+            ctx.console.print(f"  [{THEME_DIM}]No saved sessions[/{THEME_DIM}]")
+            return ""
+
+        table = Table(border_style=THEME_BORDER)
+        table.add_column("Name", style=f"bold {THEME_ACCENT}")
+        table.add_column("Messages", style="#E6EDF3", justify="right")
+        table.add_column("Tags", style=THEME_INFO, max_width=20)
+        table.add_column("Tokens", style=THEME_DIM, justify="right")
+        table.add_column("Created", style=THEME_DIM)
+
+        for session in sessions:
+            tags_str = ", ".join(session["tags"][:3]) if session["tags"] else "-"
+            if len(session["tags"]) > 3:
+                tags_str += f" +{len(session['tags']) - 3}"
+
+            table.add_row(
+                session["name"],
+                str(session["messages"]),
+                tags_str,
+                f"~{session['approx_tokens']}",
+                session["created_at"]
+            )
+
+        ctx.console.print(Panel(
+            table,
+            title=f"[bold {THEME_ACCENT}]Recent Sessions[/bold {THEME_ACCENT}]",
+            title_align="left",
+            border_style=THEME_BORDER
+        ))
         return ""
 
-    table = Table(border_style=THEME_BORDER)
-    table.add_column("Name", style=f"bold {THEME_ACCENT}")
-    table.add_column("Messages", style="#E6EDF3")
-    table.add_column("Created", style=THEME_DIM)
-    for session in sessions:
-        table.add_row(session["name"], str(session["messages"]), session["created_at"])
-    ctx.console.print(Panel(table, title=f"[bold {THEME_ACCENT}] Sessions [/bold {THEME_ACCENT}]",
-                            title_align="left", border_style=THEME_BORDER))
-    return ""
+    subcommand = args[0].lower()
+
+    # /session list — same as no args
+    if subcommand == "list":
+        return _cmd_sessions(ctx, [])
+
+    # /session timeline — show current session timeline
+    elif subcommand == "timeline":
+        if not ctx.agent:
+            ctx.console.print(f"  [{THEME_DIM}]No active agent session[/{THEME_DIM}]")
+            return ""
+
+        conversation = ctx.agent.conversation
+        if not conversation:
+            ctx.console.print(f"  [{THEME_DIM}]No messages in current session[/{THEME_DIM}]")
+            return ""
+
+        render_session_timeline(conversation, ctx.console)
+        return ""
+
+    # /session export [filename] — export current session
+    elif subcommand == "export":
+        if not ctx.agent:
+            ctx.console.print(f"  [{THEME_DIM}]No active agent session[/{THEME_DIM}]")
+            return ""
+
+        # Get output path from args if provided
+        output_path = args[1] if len(args) > 1 else None
+
+        # Save current session first
+        from .session import save_session
+        metadata = {
+            "model": getattr(ctx.agent.llm, 'model', 'unknown'),
+            "mode": ctx.agent._mode,
+            "tags": []
+        }
+        session_name = save_session(ctx.agent.conversation, metadata=metadata)
+
+        # Export to markdown
+        exported = export_session_markdown(session_name, output_path)
+        if exported:
+            ctx.console.print(f"  [{THEME_SUCCESS}]✓ Exported to: {exported}[/{THEME_SUCCESS}]")
+        else:
+            ctx.console.print(f"  [{THEME_ERROR}]Failed to export session[/{THEME_ERROR}]")
+        return ""
+
+    # /session tag <name> — add tag to current session
+    elif subcommand == "tag":
+        if len(args) < 2:
+            ctx.console.print(f"  [{THEME_WARN}]Usage: /session tag <tag-name>[/{THEME_WARN}]")
+            return ""
+
+        if not ctx.agent:
+            ctx.console.print(f"  [{THEME_DIM}]No active agent session[/{THEME_DIM}]")
+            return ""
+
+        # Save current session first
+        from .session import save_session
+        metadata = {
+            "model": getattr(ctx.agent.llm, 'model', 'unknown'),
+            "mode": ctx.agent._mode,
+            "tags": []
+        }
+        session_name = save_session(ctx.agent.conversation, metadata=metadata)
+
+        # Add tag
+        tag = " ".join(args[1:])
+        if add_session_tag(session_name, tag):
+            ctx.console.print(f"  [{THEME_SUCCESS}]✓ Added tag: {tag}[/{THEME_SUCCESS}]")
+        else:
+            ctx.console.print(f"  [{THEME_ERROR}]Failed to add tag[/{THEME_ERROR}]")
+        return ""
+
+    # /session tags — show current session tags
+    elif subcommand == "tags":
+        if not ctx.agent:
+            ctx.console.print(f"  [{THEME_DIM}]No active agent session[/{THEME_DIM}]")
+            return ""
+
+        # Save and get tags
+        from .session import save_session
+        metadata = {
+            "model": getattr(ctx.agent.llm, 'model', 'unknown'),
+            "mode": ctx.agent._mode,
+            "tags": []
+        }
+        session_name = save_session(ctx.agent.conversation, metadata=metadata)
+        tags = get_session_tags(session_name)
+
+        if tags:
+            ctx.console.print(f"  [{THEME_INFO}]Tags: {', '.join(tags)}[/{THEME_INFO}]")
+        else:
+            ctx.console.print(f"  [{THEME_DIM}]No tags[/{THEME_DIM}]")
+        return ""
+
+    # /session search <keyword> — search sessions
+    elif subcommand == "search":
+        if len(args) < 2:
+            ctx.console.print(f"  [{THEME_WARN}]Usage: /session search <keyword>[/{THEME_WARN}]")
+            return ""
+
+        keyword = " ".join(args[1:])
+        results = search_sessions(keyword, limit=10)
+
+        if not results:
+            ctx.console.print(f"  [{THEME_DIM}]No sessions found matching '{keyword}'[/{THEME_DIM}]")
+            return ""
+
+        table = Table(border_style=THEME_BORDER)
+        table.add_column("Session", style=f"bold {THEME_ACCENT}")
+        table.add_column("Matches", style="#E6EDF3", justify="right")
+        table.add_column("Context", style=THEME_DIM, max_width=50)
+
+        for result in results:
+            context = result["first_match"]["context"]
+            table.add_row(
+                result["name"],
+                str(result["matches"]),
+                context
+            )
+
+        ctx.console.print(Panel(
+            table,
+            title=f"[bold {THEME_ACCENT}]Search Results: '{keyword}'[/bold {THEME_ACCENT}]",
+            title_align="left",
+            border_style=THEME_BORDER
+        ))
+        return ""
+
+    else:
+        ctx.console.print(f"  [{THEME_WARN}]Unknown subcommand: {subcommand}[/{THEME_WARN}]")
+        ctx.console.print(f"  [{THEME_DIM}]Available: list, timeline, export, tag, tags, search[/{THEME_DIM}]")
+        return ""
 
 
 def _cmd_config(ctx: CommandContext, args: list[str]) -> str:
-    _ = args
-    _show_config_panel(ctx.console, ctx.config)
+    from .config import CONFIG_FIELDS
+
+    # No args: show all config
+    if not args:
+        _show_config_panel(ctx.console, ctx.config)
+        return ""
+
+    subcommand = args[0].lower()
+
+    # /config diff — show differences from defaults
+    if subcommand == "diff":
+        diff = ctx.config.get_config_diff()
+        modified = diff["modified"]
+        defaults = diff["default"]
+
+        if not modified:
+            ctx.console.print(f"  [{THEME_DIM}]All settings at default values[/{THEME_DIM}]")
+            return ""
+
+        table = Table(border_style=THEME_BORDER, show_header=True, padding=(0, 1))
+        table.add_column("Key", style=f"bold {THEME_ACCENT}", min_width=24)
+        table.add_column("Current", style="#E6EDF3", min_width=16)
+        table.add_column("Default", style=THEME_DIM, min_width=16)
+        table.add_column("Status", style=THEME_WARN, width=8)
+
+        for key in sorted(modified.keys()):
+            info = modified[key]
+            current_str = str(info["current"])
+            if isinstance(info["current"], list):
+                current_str = ", ".join(info["current"])
+            default_str = str(info["default"])
+            if isinstance(info["default"], list):
+                default_str = ", ".join(info["default"])
+
+            # Truncate long values
+            if len(current_str) > 32:
+                current_str = current_str[:29] + "..."
+            if len(default_str) > 32:
+                default_str = default_str[:29] + "..."
+
+            table.add_row(key, current_str, default_str, f"[{THEME_WARN}]Modified[/{THEME_WARN}]")
+
+        from rich.panel import Panel
+        ctx.console.print()
+        ctx.console.print(Panel(
+            table,
+            title=f"[bold {THEME_ACCENT}] Configuration Differences [/bold {THEME_ACCENT}]",
+            title_align="left",
+            border_style=THEME_BORDER,
+            padding=(0, 1)
+        ))
+        ctx.console.print(f"  [{THEME_DIM}]{len(modified)} modified • {len(defaults)} at default[/{THEME_DIM}]")
+        return ""
+
+    # /config help <key> — show field documentation
+    if subcommand == "help" and len(args) >= 2:
+        key = args[1]
+        if key not in CONFIG_FIELDS:
+            ctx.console.print(f"  [{THEME_ERROR}]Unknown configuration key: {key}[/{THEME_ERROR}]")
+            ctx.console.print(f"  [{THEME_DIM}]Use /config to see all available keys[/{THEME_DIM}]")
+            return ""
+
+        spec = CONFIG_FIELDS[key]
+        current_value = ctx.config.get_config_value(key)
+
+        # Format value for display
+        value_str = str(current_value)
+        if isinstance(current_value, list):
+            value_str = ", ".join(current_value)
+
+        ctx.console.print()
+        ctx.console.print(f"  [bold {THEME_ACCENT}]{key}[/bold {THEME_ACCENT}]")
+        ctx.console.print(f"  [{THEME_DIM}]{spec.description}[/{THEME_DIM}]")
+        ctx.console.print()
+        ctx.console.print(f"  Type:    [{THEME_INFO}]{spec.value_type}[/{THEME_INFO}]")
+        ctx.console.print(f"  Current: [bold]{value_str}[/bold]")
+        ctx.console.print(f"  Default: [{THEME_DIM}]{spec.default}[/{THEME_DIM}]")
+
+        # Show valid values for enums
+        if spec.value_type == "str" and spec.validator:
+            # Try to extract valid values from error message
+            is_valid, _, error_msg = spec.validator("__invalid__")
+            if not is_valid and "Must be one of:" in error_msg:
+                valid_part = error_msg.split("Must be one of:")[-1].strip()
+                ctx.console.print(f"  Valid:   [{THEME_INFO}]{valid_part}[/{THEME_INFO}]")
+        elif spec.value_type == "int" and spec.validator:
+            # Try to extract range from error message
+            is_valid, _, error_msg = spec.validator(-999999)
+            if not is_valid and "between" in error_msg:
+                ctx.console.print(f"  Range:   [{THEME_INFO}]{error_msg.replace('Must be ', '')}[/{THEME_INFO}]")
+
+        ctx.console.print()
+        return ""
+
+    # /config set <key> <value> — set configuration value
+    if subcommand == "set" and len(args) >= 3:
+        key = args[1]
+        value_str = " ".join(args[2:])
+
+        if key not in CONFIG_FIELDS:
+            ctx.console.print(f"  [{THEME_ERROR}]Unknown configuration key: {key}[/{THEME_ERROR}]")
+            ctx.console.print(f"  [{THEME_DIM}]Use /config to see all available keys[/{THEME_DIM}]")
+            return ""
+
+        spec = CONFIG_FIELDS[key]
+
+        # Coerce value to correct type
+        if spec.value_type == "bool":
+            # Parse boolean
+            if value_str.lower() in ("true", "yes", "on", "1"):
+                value = True
+            elif value_str.lower() in ("false", "no", "off", "0"):
+                value = False
+            else:
+                ctx.console.print(f"  [{THEME_ERROR}]Invalid boolean value. Use: true/false, yes/no, on/off, 1/0[/{THEME_ERROR}]")
+                return ""
+        elif spec.value_type == "int":
+            try:
+                value = int(value_str)
+            except ValueError:
+                ctx.console.print(f"  [{THEME_ERROR}]Invalid integer value[/{THEME_ERROR}]")
+                return ""
+        elif spec.value_type == "list":
+            value = value_str
+        else:
+            value = value_str
+
+        success, error_msg = ctx.config.set_config_value(key, value)
+        if not success:
+            ctx.console.print(f"  [{THEME_ERROR}]{error_msg}[/{THEME_ERROR}]")
+            return ""
+
+        # Get the coerced value for display
+        final_value = ctx.config.get_config_value(key)
+        value_display = str(final_value)
+        if isinstance(final_value, list):
+            value_display = ", ".join(final_value)
+
+        ctx.console.print(f"  [{THEME_SUCCESS}]✓ Set {key} → {value_display}[/{THEME_SUCCESS}]")
+        return ""
+
+    # /config reset <key> — reset to default
+    if subcommand == "reset" and len(args) >= 2:
+        key = args[1]
+
+        if key not in CONFIG_FIELDS:
+            ctx.console.print(f"  [{THEME_ERROR}]Unknown configuration key: {key}[/{THEME_ERROR}]")
+            ctx.console.print(f"  [{THEME_DIM}]Use /config to see all available keys[/{THEME_DIM}]")
+            return ""
+
+        spec = CONFIG_FIELDS[key]
+        success, error_msg = ctx.config.reset_config_value(key)
+        if not success:
+            ctx.console.print(f"  [{THEME_ERROR}]{error_msg}[/{THEME_ERROR}]")
+            return ""
+
+        default_display = str(spec.default)
+        if isinstance(spec.default, list):
+            default_display = ", ".join(spec.default)
+
+        ctx.console.print(f"  [{THEME_SUCCESS}]✓ Reset {key} → {default_display}[/{THEME_SUCCESS}]")
+        return ""
+
+    # /config <key> — show single config value details
+    if len(args) == 1:
+        key = args[0]
+        if key not in CONFIG_FIELDS:
+            ctx.console.print(f"  [{THEME_ERROR}]Unknown configuration key: {key}[/{THEME_ERROR}]")
+            ctx.console.print(f"  [{THEME_DIM}]Use /config to see all available keys[/{THEME_DIM}]")
+            return ""
+
+        spec = CONFIG_FIELDS[key]
+        current_value = ctx.config.get_config_value(key)
+
+        # Format value for display
+        value_str = str(current_value)
+        if isinstance(current_value, list):
+            value_str = ", ".join(current_value)
+
+        is_modified = current_value != spec.default
+        status_color = THEME_WARN if is_modified else THEME_DIM
+        status_text = "Modified" if is_modified else "Default"
+
+        ctx.console.print()
+        ctx.console.print(f"  [bold {THEME_ACCENT}]{key}[/bold {THEME_ACCENT}]")
+        ctx.console.print(f"  [{THEME_DIM}]{spec.description}[/{THEME_DIM}]")
+        ctx.console.print()
+        ctx.console.print(f"  Type:    [{THEME_INFO}]{spec.value_type}[/{THEME_INFO}]")
+        ctx.console.print(f"  Current: [bold]{value_str}[/bold]")
+        ctx.console.print(f"  Default: [{THEME_DIM}]{spec.default}[/{THEME_DIM}]")
+        ctx.console.print(f"  Status:  [{status_color}]{status_text}[/{status_color}]")
+
+        # Show valid values/range
+        if spec.value_type == "str" and spec.validator:
+            is_valid, _, error_msg = spec.validator("__invalid__")
+            if not is_valid and "Must be one of:" in error_msg:
+                valid_part = error_msg.split("Must be one of:")[-1].strip()
+                ctx.console.print(f"  Valid:   [{THEME_INFO}]{valid_part}[/{THEME_INFO}]")
+        elif spec.value_type == "int" and spec.validator:
+            is_valid, _, error_msg = spec.validator(-999999)
+            if not is_valid and "between" in error_msg:
+                ctx.console.print(f"  Range:   [{THEME_INFO}]{error_msg.replace('Must be ', '')}[/{THEME_INFO}]")
+
+        ctx.console.print()
+        ctx.console.print(f"  [{THEME_DIM}]Use /config set {key} <value> to change[/{THEME_DIM}]")
+        ctx.console.print(f"  [{THEME_DIM}]Use /config reset {key} to restore default[/{THEME_DIM}]")
+        ctx.console.print()
+        return ""
+
+    # Invalid usage
+    ctx.console.print("  Usage:")
+    ctx.console.print("    /config                      Show all configuration")
+    ctx.console.print("    /config <key>                Show details for one key")
+    ctx.console.print("    /config set <key> <value>    Set configuration value")
+    ctx.console.print("    /config reset <key>          Reset to default")
+    ctx.console.print("    /config diff                 Show differences from defaults")
+    ctx.console.print("    /config help <key>           Show field documentation")
     return ""
 
 
@@ -447,6 +827,38 @@ def _cmd_stats(ctx: CommandContext, args: list[str]) -> str:
             )
         ctx.console.print(Panel(tool_table, title=f"[bold {THEME_ACCENT}] Tool Metrics [/bold {THEME_ACCENT}]",
                                 title_align="left", border_style=THEME_BORDER, padding=(0, 1)))
+
+    # Command usage statistics (from UI state)
+    if ctx.config.ui_state:
+        ui_stats = ctx.config.ui_state.get_stats_summary()
+        top_commands = ui_stats.get("top_commands", [])
+
+        if top_commands:
+            ctx.console.print()
+            cmd_table = Table(show_header=True, border_style=THEME_BORDER, padding=(0, 1), box=None)
+            cmd_table.add_column("Command", style=f"bold {THEME_ACCENT}", min_width=16)
+            cmd_table.add_column("Usage", justify="right", style="#E6EDF3")
+
+            for cmd, count in top_commands:
+                cmd_table.add_row(cmd, f"{count}")
+
+            ctx.console.print(Panel(
+                cmd_table,
+                title=f"[bold {THEME_ACCENT}] Top Commands (All Time) [/bold {THEME_ACCENT}]",
+                title_align="left",
+                border_style=THEME_BORDER,
+                padding=(0, 1)
+            ))
+
+            # Show summary stats
+            ctx.console.print()
+            summary_text = (
+                f"  Total commands executed: [bold]{ui_stats.get('total_commands_executed', 0):,}[/bold]  |  "
+                f"Unique commands used: [bold]{ui_stats.get('unique_commands_used', 0)}[/bold]  |  "
+                f"Projects tracked: [bold]{ui_stats.get('projects_tracked', 0)}[/bold]"
+            )
+            ctx.console.print(f"[{THEME_DIM}]{summary_text}[/{THEME_DIM}]")
+
     return ""
 
 
@@ -717,6 +1129,8 @@ def _cmd_display(ctx: CommandContext, args: list[str]) -> str:
         ctx.config.reasoning_display = mode
         ctx.agent.reasoning_display = mode
         ctx.config.save()
+        if ctx.config.ui_state:
+            ctx.config.ui_state.set_project_setting("reasoning_display", mode)
         ctx.console.print(f"  [{THEME_SUCCESS}]✓ thinking display → {mode}[/{THEME_SUCCESS}]")
         return ""
 
@@ -728,6 +1142,8 @@ def _cmd_display(ctx: CommandContext, args: list[str]) -> str:
         ctx.config.web_display = mode
         ctx.agent.web_display = mode
         ctx.config.save()
+        if ctx.config.ui_state:
+            ctx.config.ui_state.set_project_setting("web_display", mode)
         ctx.console.print(f"  [{THEME_SUCCESS}]✓ web display → {mode}[/{THEME_SUCCESS}]")
         return ""
 
@@ -793,7 +1209,13 @@ def _cmd_plan(ctx: CommandContext, args: list[str]) -> str:
             ctx.console.print(f"  [{THEME_DIM}]No plan yet. Ask me to draft one first.[/{THEME_DIM}]")
             return ""
         ctx.console.print(f"\n  [bold {THEME_ACCENT}]▣ {plan.title}[/bold {THEME_ACCENT}]")
-        status_icons = {"pending": "○", "executing": "◉", "done": "✓", "failed": "✗", "skipped": "–"}
+        status_icons = {
+            "pending": get_icon("○"),
+            "executing": get_icon("◉"),
+            "done": get_icon("✓"),
+            "failed": get_icon("✗"),
+            "skipped": get_icon("–")
+        }
         status_colors = {"done": THEME_SUCCESS, "failed": THEME_ERROR, "executing": THEME_WARN, "pending": THEME_DIM, "skipped": THEME_DIM}
         for step in plan.steps:
             icon = status_icons.get(step.status, "?")
@@ -846,6 +1268,48 @@ def _cmd_reset(ctx: CommandContext, args: list[str]) -> str:
     return ""
 
 
+def _cmd_theme(ctx: CommandContext, args: list[str]) -> str:
+    from . import theme
+
+    if not args:
+        available = theme.list_themes()
+        current = ctx.config.theme
+        ctx.console.print(f"  Current theme: [bold {THEME_ACCENT}]{current}[/bold {THEME_ACCENT}]")
+        ctx.console.print(f"  [{THEME_DIM}]Available:[/{THEME_DIM}] {', '.join(available)}")
+        ctx.console.print(f"  [{THEME_DIM}]Usage: /theme <name> | /theme list[/{THEME_DIM}]")
+        return ""
+
+    if args[0] == "list":
+        available = theme.list_themes()
+        current = ctx.config.theme
+        table = Table(border_style=THEME_BORDER)
+        table.add_column("", width=2)
+        table.add_column("Theme", style=f"bold {THEME_ACCENT}")
+        for name in available:
+            marker = f"[{THEME_SUCCESS}]●[/{THEME_SUCCESS}]" if name == current else " "
+            table.add_row(marker, name)
+        ctx.console.print(Panel(table, title=f"[bold {THEME_ACCENT}] Themes [/bold {THEME_ACCENT}]",
+                                title_align="left", border_style=THEME_BORDER))
+        return ""
+
+    theme_name = args[0].lower()
+    if theme.set_theme(theme_name):
+        ctx.config.theme = theme_name
+        ctx.config.save()
+
+        # Save theme preference to UI state
+        if ctx.config.ui_state:
+            ctx.config.ui_state.set_project_setting("theme", theme_name)
+
+        ctx.console.print(f"  [{THEME_SUCCESS}]✓ Theme switched to: {theme_name}[/{THEME_SUCCESS}]")
+        ctx.console.print(f"  [{THEME_DIM}]Note: Restart the agent to see full theme changes[/{THEME_DIM}]")
+    else:
+        available = theme.list_themes()
+        ctx.console.print(f"  [{THEME_WARN}]Unknown theme: {theme_name}[/{THEME_WARN}]")
+        ctx.console.print(f"  [{THEME_DIM}]Available:[/{THEME_DIM}] {', '.join(available)}")
+    return ""
+
+
 COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "/quit": _cmd_quit,
     "/help": _cmd_help,
@@ -866,4 +1330,5 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "/diff": _cmd_diff,
     "/plan": _cmd_plan,
     "/reset": _cmd_reset,
+    "/theme": _cmd_theme,
 }

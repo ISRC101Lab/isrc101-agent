@@ -10,6 +10,7 @@ from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.styles import Style
 
 from .theme import ACCENT as THEME_ACCENT, PROMPT as THEME_PROMPT
+from .rendering import get_icon
 
 # ── Gradient color system ─────────────────────────
 GRADIENT_STOPS: List[Tuple[int, int, int]] = [
@@ -62,13 +63,16 @@ SLASH_COMMAND_SPECS: tuple[SlashCommandSpec, ...] = (
     SlashCommandSpec("/web",      "/web",         "Toggle web search and URL fetching on or off", ("fetch", "url", "docs")),
     SlashCommandSpec("/grounding", "/grounding",   "Control strict grounded web-answer validation", ("citations", "evidence", "hallucination")),
     SlashCommandSpec("/display",  "/display",     "Configure thinking display, answer style, and tool output", ("thinking", "summary", "verbose", "concise", "tools", "parallel")),
+    SlashCommandSpec("/theme",    "/theme",       "Switch between light and dark color themes", ("color", "appearance", "dark", "light")),
     SlashCommandSpec("/save",     "/save [name]", "Save the current conversation to a named session", ("session", "history")),
     SlashCommandSpec("/load",     "/load [name]", "Restore a previously saved conversation session", ("session", "history")),
-    SlashCommandSpec("/sessions", "/sessions",    "List all saved sessions with message counts", ("session", "history")),
+    SlashCommandSpec("/sessions", "/sessions [list|timeline|export|tag|tags|search]",
+                     "Enhanced session management: list, timeline, export, tagging, search",
+                     ("session", "history", "save", "export", "timeline")),
     SlashCommandSpec("/compact",  "/compact",     "Summarize conversation history to free up context", ("context", "tokens")),
     SlashCommandSpec("/undo",     "/undo",        "Revert the last file change made by the agent", ("revert", "rollback")),
     SlashCommandSpec("/diff",     "/diff",        "Show uncommitted changes as a unified diff", ("git", "changes", "patch")),
-    SlashCommandSpec("/config",   "/config",      "Display current configuration and model settings", ("settings", "model")),
+    SlashCommandSpec("/config",   "/config [key|set|reset|diff]", "Manage configuration settings interactively", ("settings", "preferences", "customize")),
     SlashCommandSpec("/stats",    "/stats",       "Show token usage and cost for this session", ("tokens", "usage", "cost")),
     SlashCommandSpec("/git",      "/git",         "Show git branch, status, and recent commits", ("branch", "commit", "status")),
     SlashCommandSpec("/reset",    "/reset",       "Clear conversation history and start fresh", ("clear", "conversation")),
@@ -285,9 +289,11 @@ class SlashCommandCompleter(Completer):
         self,
         specs: Sequence[SlashCommandSpec] = SLASH_COMMAND_SPECS,
         max_items: int = 18,
+        ui_state_manager=None,
     ):
         self.specs = list(specs)
         self.max_items = max_items
+        self.ui_state_manager = ui_state_manager
         self.order_map = {spec.command: index for index, spec in enumerate(self.specs)}
         self.usage_width = max(len(spec.usage) for spec in self.specs)
 
@@ -315,7 +321,16 @@ class SlashCommandCompleter(Completer):
         for spec in self.specs:
             key = _command_sort_key(token, spec, self.order_map)
             if key is not None:
-                ranked.append((key, spec))
+                # Add usage priority score if UI state is available
+                priority_score = 0.0
+                if self.ui_state_manager:
+                    priority_score = self.ui_state_manager.get_command_priority_score(spec.command)
+
+                # Combine fuzzy match key with priority score
+                # Format: (match_type, match_quality, -priority_score, original_order)
+                # Negative priority so higher scores sort first
+                enhanced_key = (key[0], key[1], -priority_score, key[2])
+                ranked.append((enhanced_key, spec))
 
         ranked.sort(key=lambda item: item[0])
         replace_len = len(token)
@@ -368,7 +383,7 @@ def select_model_interactive(config) -> str:
         provider = _short(model.provider or "-", 9)
         desc = model.description.strip() if model.description else model.model
         desc = _short(desc, 30)
-        key_mark = "✓" if model.resolve_api_key() else "·"
+        key_mark = get_icon("✓") if model.resolve_api_key() else get_icon("·")
         api_host = _safe_api_host(model.api_base)
         show_host = api_host if api_host and "localhost" not in api_host else ""
         _model_cache.append((provider, desc, key_mark, show_host))
@@ -434,7 +449,7 @@ def select_model_interactive(config) -> str:
             is_active = model.name == config.active_model
 
             pointer = "›" if is_current else " "
-            active_mark = "●" if is_active else " "
+            active_mark = get_icon("●") if is_active else " "
             provider, desc, key_mark, show_host = _model_cache[model_index]
 
             if is_current:
@@ -449,7 +464,9 @@ def select_model_interactive(config) -> str:
                 line += f"  @{show_host}"
             lines.append((row_style, line + "\n"))
 
-        lines.append(("#66788A", f"\n {len(visible[0])}/{len(models)} shown • active=● • key=✓"))
+        check_icon = get_icon("✓")
+        active_icon = get_icon("●")
+        lines.append(("#66788A", f"\n {len(visible[0])}/{len(models)} shown • active={active_icon} • key={check_icon}"))
         return lines
 
     refresh_visible()
@@ -589,7 +606,7 @@ def select_skills_interactive(config, available_skills: dict) -> list[str]:
             is_current = pos == cursor[0]
 
             pointer = "›" if is_current else " "
-            marker = "✓" if checked else "·"
+            marker = get_icon("✓") if checked else get_icon("·")
             desc = _short(spec.description.strip(), 54)
 
             if is_current:
@@ -602,7 +619,8 @@ def select_skills_interactive(config, available_skills: dict) -> list[str]:
             line = f" {pointer} {marker} {name:<{name_width}} {desc}"
             lines.append((row_style, line + "\n"))
 
-        lines.append(("#66788A", f"\n enabled {len(enabled)}/{len(names)} • checked=✓"))
+        check_icon = get_icon("✓")
+        lines.append(("#66788A", f"\n enabled {len(enabled)}/{len(names)} • checked={check_icon}"))
         return lines
 
     refresh_visible()

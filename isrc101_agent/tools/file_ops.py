@@ -270,13 +270,22 @@ class FileOps:
             n /= 1024
         return f"{n:.1f}TB"
 
-    def find_files(self, pattern: str, path: str = ".", max_results: int = 50) -> str:
-        """Find files by glob pattern, sorted by modification time (newest first)."""
+    def find_files(self, pattern: str, path: str = ".", max_results: int = 50,
+                   progress_callback=None) -> str:
+        """Find files by glob pattern, sorted by modification time (newest first).
+
+        Args:
+            pattern: Glob pattern (e.g., '*.py', 'test_*.js')
+            path: Root directory to search
+            max_results: Maximum number of results to return
+            progress_callback: Optional callable(current, total) for progress updates
+        """
         fp = self._resolve(path)
         if not fp.is_dir():
             raise FileOperationError(f"Not a directory: {path}")
 
         matches = []
+        scanned = 0
         for p in fp.rglob(pattern):
             if any(skip in p.parts for skip in self.SKIP_DIRS):
                 continue
@@ -286,6 +295,9 @@ class FileOps:
                 rel = p.relative_to(self.project_root)
                 mtime = p.stat().st_mtime
                 matches.append((str(rel), mtime))
+                scanned += 1
+                if progress_callback and scanned % 10 == 0:
+                    progress_callback(scanned, None)
             except (ValueError, OSError):
                 continue
 

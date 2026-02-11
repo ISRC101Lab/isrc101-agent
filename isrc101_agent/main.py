@@ -51,13 +51,32 @@ def cli(ctx):
 @click.option("--mode", default=None, help="Mode: agent or ask")
 @click.option("--no-git", is_flag=True, help="Disable auto-commit")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
-def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbose):
+@click.option("--no-unicode", is_flag=True, help="Use ASCII icons instead of Unicode")
+@click.option("--high-contrast", is_flag=True, help="Use high contrast theme")
+def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbose, no_unicode, high_contrast):
     """Start an interactive session."""
     profiler = StartupProfiler.from_env()
 
     os.environ.setdefault("PROMPT_TOOLKIT_NO_CPR", "1")
     config = Config.load(project_dir)
     profiler.mark("config.load")
+
+    # Initialize theme system
+    from . import theme
+    from .rendering import set_use_unicode
+
+    # Handle high-contrast mode
+    if high_contrast:
+        theme.set_theme("high_contrast")
+    else:
+        theme.set_theme(config.theme)
+
+    # Handle Unicode/ASCII mode
+    if no_unicode:
+        config.use_unicode = False
+    set_use_unicode(config.use_unicode)
+
+    profiler.mark("theme.init")
 
     if model:
         if model in config.models:
@@ -104,7 +123,7 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
     skill_prompt, _, missing_skills = build_skill_instructions(skills, config.enabled_skills)
     profiler.mark("skills.prompt")
 
-    from .theme import DIM, SEPARATOR, SUCCESS
+    from .theme import SEPARATOR
     from .ui import (
         MAX_SLASH_MENU_ITEMS,
         PTK_STYLE,
@@ -131,7 +150,6 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
         blocked_commands=config.blocked_commands,
         command_timeout=config.command_timeout,
         commit_prefix=config.commit_prefix,
-        tavily_api_key=config.tavily_api_key,
     )
     tools.web_enabled = config.web_enabled
     profiler.mark("tools.init")
@@ -162,6 +180,9 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
         web_context_chars=config.web_context_chars,
         max_web_calls_per_turn=config.max_web_calls_per_turn,
         tool_parallelism=config.tool_parallelism,
+        result_truncation_mode=config.result_truncation_mode,
+        display_file_tree=config.display_file_tree,
+        config=config,
     )
     profiler.mark("agent.init")
 
@@ -178,7 +199,10 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
 
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
-    slash_completer = SlashCommandCompleter(max_items=MAX_SLASH_MENU_ITEMS)
+    slash_completer = SlashCommandCompleter(
+        max_items=MAX_SLASH_MENU_ITEMS,
+        ui_state_manager=config.ui_state
+    )
     session = PromptSession(
         history=FileHistory(str(CONFIG_DIR / "history.txt")),
         multiline=False,
@@ -205,25 +229,7 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
 
     pending_ctrl_d_exit = False
 
-    # ── Auto-restore previous session ──
-    from .session import load_session, save_session
-
-    auto_session_name = f"auto_{project_root.name}"
-    auto_session = load_session(auto_session_name)
-    if auto_session:
-        msg_count = len(auto_session.get("conversation", []))
-        saved_project = auto_session.get("metadata", {}).get("project_root", "")
-        if saved_project == str(project_root) and msg_count > 0:
-            created = auto_session.get("metadata", {}).get("created_at", "unknown")
-            try:
-                ans = console.input(
-                    f"  [{DIM}]Resume last session? ({msg_count} msgs, {created}) [y/N]: [/{DIM}]"
-                ).strip().lower()
-                if ans in ("y", "yes"):
-                    agent.conversation = auto_session["conversation"]
-                    console.print(f"  [{SUCCESS}]✓ Resumed ({msg_count} messages)[/{SUCCESS}]")
-            except (KeyboardInterrupt, EOFError):
-                pass
+    from .session import save_session
 
     def _print_separator():
         cols = shutil.get_terminal_size().columns
@@ -231,10 +237,8 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
 
     while True:
         try:
-            _print_separator()
             prompt_html = make_prompt_html(agent.mode)
             user_input = session.prompt(prompt_html, key_bindings=repl_kb).strip()
-            _print_separator()
             pending_ctrl_d_exit = False
         except EOFError:
             if pending_ctrl_d_exit:
@@ -249,6 +253,8 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
 
         if not user_input:
             continue
+
+        _print_separator()
 
         if user_input.startswith("/"):
             result = handle_command(
@@ -276,6 +282,10 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
 
     # ── Auto-save session on exit ──
     if agent.conversation:
+        # Generate auto-save session name
+        import time
+        auto_session_name = f"auto_{int(time.time())}"
+
         metadata = {
             "mode": agent.mode,
             "model": config.active_model,
@@ -315,7 +325,6 @@ def ask(message, model, project_dir, mode):
     tools = ToolRegistry(
         project_root=str(project_root),
         commit_prefix=config.commit_prefix,
-        tavily_api_key=config.tavily_api_key,
     )
     tools.web_enabled = config.web_enabled
 
@@ -343,6 +352,9 @@ def ask(message, model, project_dir, mode):
         web_context_chars=config.web_context_chars,
         max_web_calls_per_turn=config.max_web_calls_per_turn,
         tool_parallelism=config.tool_parallelism,
+        result_truncation_mode=config.result_truncation_mode,
+        display_file_tree=config.display_file_tree,
+        config=config,
     )
     agent.chat(" ".join(message))
 

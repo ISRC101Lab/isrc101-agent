@@ -3,6 +3,7 @@
 import json
 import re
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Tuple
@@ -60,6 +61,65 @@ __all__ = ["Agent", "Plan", "PlanStep"]
 # ── Visual theme (imported from rendering.py) ──────
 
 
+# ── Progress context for slow operations ──────────
+class ProgressContext:
+    """Context manager for showing progress with elapsed time updates."""
+
+    def __init__(self, console: Console, message: str, update_interval: float = 0.5):
+        """
+        Args:
+            console: Rich Console instance
+            message: Initial status message
+            update_interval: How often to update elapsed time (seconds)
+        """
+        self.console = console
+        self.base_message = message
+        self.update_interval = update_interval
+        self.status: Optional[Status] = None
+        self._start_time: Optional[float] = None
+        self._stop_event: Optional[threading.Event] = None
+        self._update_thread: Optional[threading.Thread] = None
+
+    def __enter__(self):
+        from .theme import DIM, ACCENT, SEPARATOR
+        self._dim = DIM
+        self._accent = ACCENT
+        self._separator = SEPARATOR
+
+        self._start_time = time.monotonic()
+        self._stop_event = threading.Event()
+        self.status = Status(
+            f"  [{self._dim}]{self.base_message}[/{self._dim}]",
+            console=self.console,
+            spinner="dots",
+            spinner_style=self._accent
+        )
+        self.status.start()
+
+        # Start background thread to update elapsed time
+        self._update_thread = threading.Thread(target=self._update_loop, daemon=True)
+        self._update_thread.start()
+        return self
+
+    def _update_loop(self):
+        """Background thread that updates the status with elapsed time."""
+        while not self._stop_event.is_set():
+            elapsed = time.monotonic() - self._start_time
+            self.status.update(
+                f"  [{self._dim}]{self.base_message} [{self._separator}]({elapsed:.1f}s)[/{self._separator}][/{self._dim}]"
+            )
+            self._stop_event.wait(self.update_interval)
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._stop_event:
+            self._stop_event.set()
+        if self._update_thread:
+            self._update_thread.join(timeout=1.0)
+        if self.status:
+            self.status.stop()
+        return False
+
+
 # ── Plan data structures ──────────────────────────
 @dataclass
 class PlanStep:
@@ -106,7 +166,10 @@ class Agent:
                  web_preview_chars: int = 360,
                  web_context_chars: int = 4000,
                  max_web_calls_per_turn: int = 12,
-                 tool_parallelism: int = 4):
+                 tool_parallelism: int = 4,
+                 result_truncation_mode: str = "auto",
+                 display_file_tree: str = "auto",
+                 config=None):
         self.llm = llm
         self.tools = tools
         self.max_iterations = max_iterations
@@ -116,6 +179,7 @@ class Agent:
         self.reasoning_display = reasoning_display
         self.web_display = web_display
         self.answer_style = answer_style
+        self.config = config  # Store config for error hints
         grounded_mode = str(grounded_web_mode or "strict").strip().lower()
         if grounded_mode not in self.GROUNDED_WEB_MODES:
             grounded_mode = "strict"
@@ -145,6 +209,12 @@ class Agent:
         self.web_context_chars = max(500, int(web_context_chars))
         self.max_web_calls_per_turn = max(1, int(max_web_calls_per_turn))
         self.tool_parallelism = max(1, int(tool_parallelism))
+        self.result_truncation_mode = str(result_truncation_mode or "auto").strip().lower()
+        if self.result_truncation_mode not in ("auto", "fixed", "none"):
+            self.result_truncation_mode = "auto"
+        self.display_file_tree = str(display_file_tree or "auto").strip().lower()
+        if self.display_file_tree not in ("off", "auto", "always"):
+            self.display_file_tree = "auto"
         self._ctx = ContextWindowManager(
             llm.model, llm.max_tokens,
             getattr(llm, 'context_window', 128000))
@@ -460,7 +530,13 @@ class Agent:
             llm_response_cls=LLMResponse,
         )
 
-    def _execute_single_tool_call(self, tc):
+    def _execute_single_tool_call(self, tc, progress_callback=None):
+        """Execute a single tool call with optional progress callback.
+
+        Args:
+            tc: Tool call object with name, arguments, etc.
+            progress_callback: Optional callable(elapsed_seconds) for progress updates
+        """
         t0 = time.monotonic()
         result = self.tools.execute(tc.name, tc.arguments)
         elapsed = time.monotonic() - t0
@@ -479,6 +555,14 @@ class Agent:
         return True
 
     def _handle_parallel_tool_calls(self, tool_calls: List[Any]) -> Dict[str, tuple[str, float]]:
+        """Execute multiple tool calls in parallel.
+
+        Args:
+            tool_calls: List of tool call objects to execute in parallel
+
+        Returns:
+            Dict mapping tool_id to (result, elapsed_time) tuples
+        """
         max_workers = min(self.tool_parallelism, len(tool_calls))
         results: Dict[str, tuple[str, float]] = {}
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="tool") as pool:
@@ -515,6 +599,36 @@ class Agent:
         total_calls = len(response.tool_calls)
         batch_start = time.monotonic()
 
+        # ── File tree visualization for multi-file operations ──
+        should_show_tree = False
+        if self.display_file_tree == "always":
+            should_show_tree = True
+        elif self.display_file_tree == "auto":
+            # Count file operations (create, write, edit, delete)
+            file_ops = [tc for tc in response.tool_calls if tc.name in ToolRegistry.WRITE_TOOLS]
+            should_show_tree = len(file_ops) >= 5
+
+        if should_show_tree and response.tool_calls:
+            # Build file operations list for tree rendering
+            file_operations = []
+            for tc in response.tool_calls:
+                if tc.name in ToolRegistry.WRITE_TOOLS:
+                    path = tc.arguments.get("path", "")
+                    if path:
+                        # Determine operation status
+                        status_map = {
+                            "create_file": "created",
+                            "write_file": "modified",
+                            "str_replace": "modified",
+                            "delete_file": "deleted",
+                        }
+                        status = status_map.get(tc.name, "modified")
+                        file_operations.append({"path": path, "status": status})
+
+            if file_operations:
+                from .rendering import render_file_tree
+                render_file_tree(console, file_operations, title=f"File Operations ({len(file_operations)} files)")
+
         for i, tc in enumerate(response.tool_calls, 1):
             if i > 1 and total_calls > 1:
                 console.print(f"     [{_T_BORDER}]·[/{_T_BORDER}]")
@@ -547,7 +661,7 @@ class Agent:
                 cached_search = self._web_search_cache.get(search_query)
                 if cached_search is not None:
                     result, elapsed = cached_search, 0.0
-                    self._render_result(tc.name, result, elapsed)
+                    self._render_result(tc.name, result, elapsed, tc.arguments)
                     note = "\n\n(Note: this query was already searched earlier — returning cached results.)"
                     self.conversation.append({"role": "tool", "tool_call_id": tc.id,
                                               "content": result + note})
@@ -559,7 +673,7 @@ class Agent:
                 cached = self._web_fetch_cache.get(fetch_url)
                 if cached is not None:
                     result, elapsed = cached, 0.0
-                    self._render_result(tc.name, result, elapsed)
+                    self._render_result(tc.name, result, elapsed, tc.arguments)
                     stored_result = self._summarize_web_for_context(result)
                     note = "\n\n(Note: this URL was already fetched earlier — returning cached content.)"
                     self.conversation.append({"role": "tool", "tool_call_id": tc.id,
@@ -569,10 +683,20 @@ class Agent:
             if tc.id in parallel_results:
                 result, elapsed = parallel_results[tc.id]
             else:
-                with Status(f"  [{_T_DIM}]  running…[/{_T_DIM}]",
-                            console=console, spinner="dots", spinner_style=_T_ACCENT):
-                    result, elapsed = self._execute_single_tool_call(tc)
-            self._render_result(tc.name, result, elapsed)
+                # Use ProgressContext for slow operations (bash, web_fetch, web_search)
+                if tc.name in ("bash", "web_fetch", "web_search"):
+                    operation_name = {
+                        "bash": "running command",
+                        "web_fetch": "fetching URL",
+                        "web_search": "searching web"
+                    }.get(tc.name, "running")
+                    with ProgressContext(console, operation_name):
+                        result, elapsed = self._execute_single_tool_call(tc)
+                else:
+                    with Status(f"  [{_T_DIM}]  running…[/{_T_DIM}]",
+                                console=console, spinner="dots", spinner_style=_T_ACCENT):
+                        result, elapsed = self._execute_single_tool_call(tc)
+            self._render_result(tc.name, result, elapsed, tc.arguments)
 
             # Handle image results specially for multimodal
             if tc.name == "read_image" and result.startswith("[IMAGE:"):
@@ -625,7 +749,7 @@ class Agent:
 
     def _build_diff_panel(self, diff: str) -> Panel:
         from .rendering import build_diff_panel
-        return build_diff_panel(diff)
+        return build_diff_panel(diff, truncation_mode=self.result_truncation_mode)
 
     def _show_edit_preview(self, tool_name: str, arguments: dict):
         from .rendering import show_edit_preview
@@ -646,15 +770,16 @@ class Agent:
     def _render_tool_call(self, name, args, index=None, total=None):
         _render_tool_call_fn(console, name, args, index, total)
 
-    def _render_result(self, name, result, elapsed: float = 0):
+    def _render_result(self, name, result, elapsed: float = 0, tool_arguments: dict = None):
         _render_result_fn(console, name, result, elapsed,
-                          self.web_display, self._format_web_result_preview)
+                          self.web_display, self._format_web_result_preview, tool_arguments,
+                          self.result_truncation_mode)
 
     def _render_write_diff(self, tool_name: str, arguments: dict):
         _render_write_diff_fn(console, tool_name, arguments)
 
     def _inject_error_hint(self, tool_name: str, arguments: dict, result: str) -> str:
-        return _inject_error_hint_fn(tool_name, arguments, result)
+        return _inject_error_hint_fn(tool_name, arguments, result, self.config)
 
     def _try_parse_plan(self, content: str) -> Optional[Plan]:
         """Try to parse a structured plan from LLM response."""

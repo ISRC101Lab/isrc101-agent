@@ -4,7 +4,7 @@ import json
 import re
 import time
 from collections import OrderedDict
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Optional, Tuple
 
 from .url_utils import (
     SEARCH_URL_RE,

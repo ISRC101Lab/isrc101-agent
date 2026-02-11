@@ -1,7 +1,7 @@
 """Diff utilities for file edit preview."""
 
 import difflib
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 
 
 def generate_unified_diff(
@@ -32,6 +32,62 @@ def generate_unified_diff(
     )
 
     return "".join(diff)
+
+
+def compute_diff_stats(diff_text: str) -> Tuple[int, int, int]:
+    """Compute statistics from unified diff.
+
+    Returns: (lines_added, lines_removed, files_changed)
+    """
+    lines = diff_text.splitlines()
+    added = 0
+    removed = 0
+    files = set()
+
+    for line in lines:
+        if line.startswith('+++'):
+            # Extract filename
+            parts = line.split('\t', 1)
+            if parts:
+                fname = parts[0][4:].strip()  # Remove '+++ '
+                if fname and fname != '/dev/null':
+                    files.add(fname)
+        elif line.startswith('+') and not line.startswith('+++'):
+            added += 1
+        elif line.startswith('-') and not line.startswith('---'):
+            removed += 1
+
+    return added, removed, len(files)
+
+
+def get_char_level_diff(old_line: str, new_line: str) -> Tuple[List[Tuple[str, bool]], List[Tuple[str, bool]]]:
+    """Compute character-level differences between two lines.
+
+    Returns: (old_parts, new_parts) where each part is (text, is_changed)
+    """
+    # Use SequenceMatcher for character-level diff
+    matcher = difflib.SequenceMatcher(None, old_line, new_line)
+
+    old_parts = []
+    new_parts = []
+
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == 'equal':
+            # Unchanged text
+            old_parts.append((old_line[i1:i2], False))
+            new_parts.append((new_line[j1:j2], False))
+        elif tag == 'replace':
+            # Changed text
+            old_parts.append((old_line[i1:i2], True))
+            new_parts.append((new_line[j1:j2], True))
+        elif tag == 'delete':
+            # Text removed from old
+            old_parts.append((old_line[i1:i2], True))
+        elif tag == 'insert':
+            # Text added to new
+            new_parts.append((new_line[j1:j2], True))
+
+    return old_parts, new_parts
 
 
 def generate_side_by_side_diff(

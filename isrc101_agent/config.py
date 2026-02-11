@@ -13,10 +13,13 @@ import os
 import re
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Callable, Any, TYPE_CHECKING
 
 import yaml
 from dotenv import load_dotenv
+
+if TYPE_CHECKING:
+    from .ui_state import UIStateManager
 
 CONFIG_DIR = Path.home() / ".isrc101-agent"
 CONFIG_FILE = CONFIG_DIR / "config.yml"
@@ -38,10 +41,332 @@ WEB_DISPLAY_MODES = {"brief", "summary", "full"}
 ANSWER_STYLE_MODES = {"concise", "balanced", "detailed"}
 GROUNDED_WEB_MODES = {"off", "strict"}
 GROUNDED_CITATION_MODES = {"sources_only", "inline"}
+RESULT_TRUNCATION_MODES = {"auto", "fixed", "none"}
+FILE_TREE_DISPLAY_MODES = {"off", "auto", "always"}
+CHAT_MODES = {"agent", "ask"}
+THEMES = {"github_dark", "github_light", "nord", "dracula", "monokai"}
 DEFAULT_GROUNDED_OFFICIAL_DOMAINS = [
     "docs.nvidia.com",
     "developer.nvidia.com",
 ]
+
+
+# ── Configuration metadata and validation ──
+
+
+@dataclass
+class ConfigFieldSpec:
+    """Configuration field specification with validation rules."""
+    key: str
+    field_name: str
+    description: str
+    value_type: str  # "str", "int", "bool", "list"
+    default: Any
+    validator: Optional[Callable[[Any], tuple[bool, Any, str]]] = None  # (valid, coerced_value, error_msg)
+
+
+def _validate_int_range(value: Any, min_val: int, max_val: int) -> tuple[bool, int, str]:
+    """Validate integer within range."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return False, 0, f"Must be an integer"
+    if parsed < min_val or parsed > max_val:
+        return False, max(min_val, min(max_val, parsed)), f"Must be between {min_val} and {max_val}"
+    return True, parsed, ""
+
+
+def _validate_enum(value: Any, valid_values: set) -> tuple[bool, str, str]:
+    """Validate value is in allowed set."""
+    val_str = str(value).strip().lower()
+    if val_str not in valid_values:
+        return False, "", f"Must be one of: {', '.join(sorted(valid_values))}"
+    return True, val_str, ""
+
+
+def _validate_bool(value: Any) -> tuple[bool, bool, str]:
+    """Validate boolean value."""
+    if isinstance(value, bool):
+        return True, value, ""
+    if isinstance(value, str):
+        val_lower = value.strip().lower()
+        if val_lower in ("1", "true", "yes", "on"):
+            return True, True, ""
+        if val_lower in ("0", "false", "no", "off"):
+            return True, False, ""
+    return False, False, "Must be true/false, yes/no, on/off, or 1/0"
+
+
+def _validate_domain_list(value: Any) -> tuple[bool, List[str], str]:
+    """Validate domain list."""
+    if isinstance(value, str):
+        raw_values = re.split(r"[\s,]+", value)
+    elif isinstance(value, list):
+        raw_values = [str(item) for item in value]
+    else:
+        return False, [], "Must be a comma-separated list of domains"
+
+    cleaned = []
+    seen = set()
+    for item in raw_values:
+        host = str(item or "").strip().lower()
+        host = host.removeprefix("http://").removeprefix("https://").split("/")[0]
+        if not host or host in seen:
+            continue
+        seen.add(host)
+        cleaned.append(host)
+
+    if not cleaned:
+        return False, [], "At least one valid domain required"
+    return True, cleaned, ""
+
+
+# Configuration field registry with validation
+CONFIG_FIELDS: Dict[str, ConfigFieldSpec] = {
+    "active-model": ConfigFieldSpec(
+        key="active-model",
+        field_name="active_model",
+        description="Currently active model preset name",
+        value_type="str",
+        default="local",
+        validator=None,  # Validated against available models separately
+    ),
+    "max-iterations": ConfigFieldSpec(
+        key="max-iterations",
+        field_name="max_iterations",
+        description="Maximum agent iterations per turn",
+        value_type="int",
+        default=30,
+        validator=lambda v: _validate_int_range(v, 1, 100),
+    ),
+    "auto-confirm": ConfigFieldSpec(
+        key="auto-confirm",
+        field_name="auto_confirm",
+        description="Auto-confirm tool executions without prompting",
+        value_type="bool",
+        default=False,
+        validator=_validate_bool,
+    ),
+    "chat-mode": ConfigFieldSpec(
+        key="chat-mode",
+        field_name="chat_mode",
+        description="Chat mode: agent (full actions) or ask (read-only)",
+        value_type="str",
+        default="agent",
+        validator=lambda v: _validate_enum(v, CHAT_MODES),
+    ),
+    "auto-commit": ConfigFieldSpec(
+        key="auto-commit",
+        field_name="auto_commit",
+        description="Automatically commit changes after file modifications",
+        value_type="bool",
+        default=True,
+        validator=_validate_bool,
+    ),
+    "commit-prefix": ConfigFieldSpec(
+        key="commit-prefix",
+        field_name="commit_prefix",
+        description="Prefix for auto-generated commit messages",
+        value_type="str",
+        default="isrc101: ",
+        validator=None,
+    ),
+    "theme": ConfigFieldSpec(
+        key="theme",
+        field_name="theme",
+        description="UI color theme",
+        value_type="str",
+        default="github_dark",
+        validator=lambda v: _validate_enum(v, THEMES),
+    ),
+    "command-timeout": ConfigFieldSpec(
+        key="command-timeout",
+        field_name="command_timeout",
+        description="Command execution timeout in seconds",
+        value_type="int",
+        default=30,
+        validator=lambda v: _validate_int_range(v, 5, 300),
+    ),
+    "verbose": ConfigFieldSpec(
+        key="verbose",
+        field_name="verbose",
+        description="Enable verbose debug output",
+        value_type="bool",
+        default=False,
+        validator=_validate_bool,
+    ),
+    "web-enabled": ConfigFieldSpec(
+        key="web-enabled",
+        field_name="web_enabled",
+        description="Enable web search and URL fetching",
+        value_type="bool",
+        default=False,
+        validator=_validate_bool,
+    ),
+    "reasoning-display": ConfigFieldSpec(
+        key="reasoning-display",
+        field_name="reasoning_display",
+        description="How to display model thinking: off, summary, or full",
+        value_type="str",
+        default="summary",
+        validator=lambda v: _validate_enum(v, REASONING_DISPLAY_MODES),
+    ),
+    "web-display": ConfigFieldSpec(
+        key="web-display",
+        field_name="web_display",
+        description="Web content display mode: brief, summary, or full",
+        value_type="str",
+        default="brief",
+        validator=lambda v: _validate_enum(v, WEB_DISPLAY_MODES),
+    ),
+    "answer-style": ConfigFieldSpec(
+        key="answer-style",
+        field_name="answer_style",
+        description="Answer detail level: concise, balanced, or detailed",
+        value_type="str",
+        default="concise",
+        validator=lambda v: _validate_enum(v, ANSWER_STYLE_MODES),
+    ),
+    "grounded-web-mode": ConfigFieldSpec(
+        key="grounded-web-mode",
+        field_name="grounded_web_mode",
+        description="Grounded web answer validation: off or strict",
+        value_type="str",
+        default="strict",
+        validator=lambda v: _validate_enum(v, GROUNDED_WEB_MODES),
+    ),
+    "grounded-retry": ConfigFieldSpec(
+        key="grounded-retry",
+        field_name="grounded_retry",
+        description="Retry attempts for grounded web queries",
+        value_type="int",
+        default=1,
+        validator=lambda v: _validate_int_range(v, 0, 3),
+    ),
+    "grounded-visible-citations": ConfigFieldSpec(
+        key="grounded-visible-citations",
+        field_name="grounded_visible_citations",
+        description="Citation display mode: sources_only or inline",
+        value_type="str",
+        default="sources_only",
+        validator=lambda v: _validate_enum(v, GROUNDED_CITATION_MODES),
+    ),
+    "grounded-context-chars": ConfigFieldSpec(
+        key="grounded-context-chars",
+        field_name="grounded_context_chars",
+        description="Maximum context characters for grounded search",
+        value_type="int",
+        default=8000,
+        validator=lambda v: _validate_int_range(v, 800, 40000),
+    ),
+    "grounded-search-max-seconds": ConfigFieldSpec(
+        key="grounded-search-max-seconds",
+        field_name="grounded_search_max_seconds",
+        description="Maximum search time in seconds",
+        value_type="int",
+        default=180,
+        validator=lambda v: _validate_int_range(v, 20, 1200),
+    ),
+    "grounded-search-max-rounds": ConfigFieldSpec(
+        key="grounded-search-max-rounds",
+        field_name="grounded_search_max_rounds",
+        description="Maximum search rounds",
+        value_type="int",
+        default=8,
+        validator=lambda v: _validate_int_range(v, 1, 30),
+    ),
+    "grounded-search-per-round": ConfigFieldSpec(
+        key="grounded-search-per-round",
+        field_name="grounded_search_per_round",
+        description="Searches per round",
+        value_type="int",
+        default=3,
+        validator=lambda v: _validate_int_range(v, 1, 8),
+    ),
+    "grounded-official-domains": ConfigFieldSpec(
+        key="grounded-official-domains",
+        field_name="grounded_official_domains",
+        description="Trusted official documentation domains (comma-separated)",
+        value_type="list",
+        default=DEFAULT_GROUNDED_OFFICIAL_DOMAINS,
+        validator=_validate_domain_list,
+    ),
+    "grounded-fallback-to-open-web": ConfigFieldSpec(
+        key="grounded-fallback-to-open-web",
+        field_name="grounded_fallback_to_open_web",
+        description="Fallback to open web if official sources fail",
+        value_type="bool",
+        default=True,
+        validator=_validate_bool,
+    ),
+    "grounded-partial-on-timeout": ConfigFieldSpec(
+        key="grounded-partial-on-timeout",
+        field_name="grounded_partial_on_timeout",
+        description="Return partial results on timeout",
+        value_type="bool",
+        default=True,
+        validator=_validate_bool,
+    ),
+    "tool-parallelism": ConfigFieldSpec(
+        key="tool-parallelism",
+        field_name="tool_parallelism",
+        description="Maximum parallel tool executions",
+        value_type="int",
+        default=4,
+        validator=lambda v: _validate_int_range(v, 1, 12),
+    ),
+    "result-truncation-mode": ConfigFieldSpec(
+        key="result-truncation-mode",
+        field_name="result_truncation_mode",
+        description="Tool result truncation: auto, fixed, or none",
+        value_type="str",
+        default="auto",
+        validator=lambda v: _validate_enum(v, RESULT_TRUNCATION_MODES),
+    ),
+    "display-file-tree": ConfigFieldSpec(
+        key="display-file-tree",
+        field_name="display_file_tree",
+        description="File tree display: off, auto, or always",
+        value_type="str",
+        default="auto",
+        validator=lambda v: _validate_enum(v, FILE_TREE_DISPLAY_MODES),
+    ),
+}
+
+
+def validate_config_value(key: str, value: Any) -> tuple[bool, Any, str]:
+    """
+    Validate a configuration value.
+
+    Returns:
+        (is_valid, coerced_value, error_message)
+    """
+    if key not in CONFIG_FIELDS:
+        return False, value, f"Unknown configuration key: {key}"
+
+    spec = CONFIG_FIELDS[key]
+
+    # Handle special case for active-model validation
+    if key == "active-model":
+        # Will be validated against available models when setting
+        return True, str(value), ""
+
+    # Run validator if present
+    if spec.validator:
+        return spec.validator(value)
+
+    # No validator — just coerce type
+    if spec.value_type == "str":
+        return True, str(value), ""
+    elif spec.value_type == "int":
+        try:
+            return True, int(value), ""
+        except (TypeError, ValueError):
+            return False, spec.default, "Must be an integer"
+    elif spec.value_type == "bool":
+        return _validate_bool(value)
+
+    return True, value, ""
 
 
 @dataclass
@@ -100,6 +425,7 @@ class Config:
     chat_mode: str = "agent"
     auto_commit: bool = True
     commit_prefix: str = "isrc101: "
+    theme: str = "github_dark"
     blocked_commands: List[str] = field(
         default_factory=lambda: [
             "rm -rf /", "rm -rf /*", "mkfs", "dd if=", "> /dev/sda",
@@ -112,7 +438,6 @@ class Config:
     skills_dir: str = "skills"
     enabled_skills: List[str] = field(default_factory=lambda: list(DEFAULT_ENABLED_SKILLS))
     web_enabled: bool = False  # /web toggle
-    tavily_api_key: Optional[str] = None  # optional: TAVILY_API_KEY env var
     reasoning_display: str = "summary"
     web_display: str = "brief"
     answer_style: str = "concise"
@@ -133,6 +458,9 @@ class Config:
     web_context_chars: int = 4000
     max_web_calls_per_turn: int = 12
     tool_parallelism: int = 4
+    result_truncation_mode: str = "auto"
+    display_file_tree: str = "auto"
+    use_unicode: bool = True  # Accessibility: Unicode vs ASCII icons
     project_root: Optional[str] = None
     _config_source: str = ""
 
@@ -167,6 +495,28 @@ class Config:
         config._merge_api_keys_from_home()
         config._apply_env()
         config.project_root = str(project_path)
+
+        # Initialize UI state manager for this project
+        from .ui_state import UIStateManager
+        config.ui_state = UIStateManager(project_root=str(project_path))
+
+        # Apply UI state preferences to config (project settings take priority)
+        if config.ui_state:
+            # Restore theme from UI state if not explicitly loaded from config
+            if not config_loaded:
+                saved_theme = config.ui_state.get_project_setting("theme")
+                if saved_theme:
+                    config.theme = saved_theme
+
+            # Restore other UI preferences
+            saved_reasoning = config.ui_state.get_project_setting("reasoning_display")
+            if saved_reasoning:
+                config.reasoning_display = config._normalize_reasoning_display(saved_reasoning)
+
+            saved_web_display = config.ui_state.get_project_setting("web_display")
+            if saved_web_display:
+                config.web_display = config._normalize_web_display(saved_web_display)
+
         return config
 
     @classmethod
@@ -244,6 +594,7 @@ class Config:
         self.chat_mode = self._normalize_chat_mode(data.get("chat-mode", "agent"))
         self.auto_commit = data.get("auto-commit", True)
         self.commit_prefix = data.get("commit-prefix", "isrc101: ")
+        self.theme = data.get("theme", "github_dark")
         self.command_timeout = data.get("command-timeout", 30)
         self.verbose = data.get("verbose", False)
         self.web_enabled = data.get("web-enabled", False)
@@ -297,6 +648,15 @@ class Config:
         )
         self.tool_parallelism = self._coerce_positive_int(
             data.get("tool-parallelism", 4), default=4, min_value=1, max_value=12
+        )
+        self.result_truncation_mode = self._normalize_result_truncation_mode(
+            data.get("result-truncation-mode", "auto")
+        )
+        self.display_file_tree = self._normalize_file_tree_display(
+            data.get("display-file-tree", "auto")
+        )
+        self.use_unicode = self._coerce_bool(
+            data.get("use-unicode", True), default=True
         )
         self.skills_dir = data.get("skills-dir", "skills")
         if "enabled-skills" in data:
@@ -359,9 +719,6 @@ class Config:
                     setattr(self, attr, conv(val))
                 except (ValueError, TypeError):
                     pass
-        # Tavily API key (optional, for web search upgrade)
-        if not self.tavily_api_key:
-            self.tavily_api_key = os.environ.get("TAVILY_API_KEY")
 
     def save(self, filepath: Optional[str] = None):
         target = Path(filepath) if filepath else (
@@ -376,6 +733,7 @@ class Config:
             "chat-mode": self.chat_mode,
             "auto-commit": self.auto_commit,
             "commit-prefix": self.commit_prefix,
+            "theme": self.theme,
             "command-timeout": self.command_timeout,
             "verbose": self.verbose,
             "web-enabled": self.web_enabled,
@@ -396,11 +754,16 @@ class Config:
             "web-preview-chars": self.web_preview_chars,
             "web-context-chars": self.web_context_chars,
             "tool-parallelism": self.tool_parallelism,
+            "result-truncation-mode": self.result_truncation_mode,
+            "display-file-tree": self.display_file_tree,
+            "use-unicode": self.use_unicode,
             "skills-dir": self.skills_dir,
             "enabled-skills": self.enabled_skills,
             "models": {},
         }
         for name, m in self.models.items():
+            if m is None:
+                continue
             entry = {"provider": m.provider, "model": m.model,
                      "description": m.description, "temperature": m.temperature,
                      "max-tokens": m.max_tokens, "context-window": m.context_window}
@@ -432,21 +795,26 @@ class Config:
         return False
 
     def list_models(self) -> List[Dict]:
+        from .rendering import get_icon
         return [
             {"name": n, "active": n == self.active_model, "provider": m.provider,
              "model": m.model, "api_base": m.api_base or "-",
-             "key": "✓" if m.resolve_api_key() else "✗", "desc": m.description}
+             "key": get_icon("✓") if m.resolve_api_key() else get_icon("✗"), "desc": m.description}
             for n, m in self.models.items()
         ]
 
     def summary(self) -> dict:
+        from .rendering import get_icon
         p = self.get_active_preset()
+        check = get_icon("✓")
+        cross = get_icon("✗")
         return {
             "Active model": f"{self.active_model} → {p.model}",
             "Provider": p.provider,
             "API base": p.api_base or "(provider default)",
-            "API key": "✓" if p.resolve_api_key() else "✗ not set",
+            "API key": f"{check}" if p.resolve_api_key() else f"{cross} not set",
             "Chat mode": self.chat_mode,
+            "Theme": self.theme,
             "Skills": ", ".join(self.enabled_skills) if self.enabled_skills else "(none)",
             "Web": "ON" if self.web_enabled else "OFF",
             "Thinking display": self.reasoning_display,
@@ -514,6 +882,20 @@ class Config:
         return mode
 
     @staticmethod
+    def _normalize_result_truncation_mode(value) -> str:
+        mode = str(value or "auto").strip().lower()
+        if mode not in RESULT_TRUNCATION_MODES:
+            return "auto"
+        return mode
+
+    @staticmethod
+    def _normalize_file_tree_display(value) -> str:
+        mode = str(value or "auto").strip().lower()
+        if mode not in FILE_TREE_DISPLAY_MODES:
+            return "auto"
+        return mode
+
+    @staticmethod
     def _normalize_domain_list(value) -> List[str]:
         if isinstance(value, str):
             raw_values = re.split(r"[\s,]+", value)
@@ -570,3 +952,87 @@ class Config:
                 return current
             current = current.parent
         return None
+
+    def get_config_value(self, key: str) -> Any:
+        """Get configuration value by key."""
+        if key not in CONFIG_FIELDS:
+            return None
+        spec = CONFIG_FIELDS[key]
+        return getattr(self, spec.field_name, spec.default)
+
+    def set_config_value(self, key: str, value: Any) -> tuple[bool, str]:
+        """
+        Set configuration value with validation.
+
+        Returns:
+            (success, error_message)
+        """
+        # Special handling for active-model
+        if key == "active-model":
+            if value not in self.models:
+                return False, f"Model '{value}' not found. Use /model list to see available models."
+            self.active_model = value
+            self.save()
+            return True, ""
+
+        is_valid, coerced_value, error_msg = validate_config_value(key, value)
+        if not is_valid:
+            return False, error_msg
+
+        if key not in CONFIG_FIELDS:
+            return False, f"Unknown configuration key: {key}"
+
+        spec = CONFIG_FIELDS[key]
+        setattr(self, spec.field_name, coerced_value)
+        self.save()
+        return True, ""
+
+    def reset_config_value(self, key: str) -> tuple[bool, str]:
+        """
+        Reset configuration value to default.
+
+        Returns:
+            (success, error_message)
+        """
+        if key not in CONFIG_FIELDS:
+            return False, f"Unknown configuration key: {key}"
+
+        spec = CONFIG_FIELDS[key]
+        setattr(self, spec.field_name, spec.default)
+        self.save()
+        return True, ""
+
+    def get_config_diff(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Get configuration differences from defaults.
+
+        Returns:
+            Dict with keys: 'modified', 'default'
+        """
+        result = {"modified": {}, "default": {}}
+
+        for key, spec in CONFIG_FIELDS.items():
+            current_value = getattr(self, spec.field_name, spec.default)
+
+            # Handle list comparison
+            if isinstance(spec.default, list):
+                is_default = current_value == spec.default
+            else:
+                is_default = current_value == spec.default
+
+            if is_default:
+                result["default"][key] = {
+                    "current": current_value,
+                    "default": spec.default,
+                    "type": spec.value_type,
+                    "description": spec.description,
+                }
+            else:
+                result["modified"][key] = {
+                    "current": current_value,
+                    "default": spec.default,
+                    "type": spec.value_type,
+                    "description": spec.description,
+                }
+
+        return result
