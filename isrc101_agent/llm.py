@@ -72,6 +72,15 @@ You help users understand, modify, and manage their codebase through natural con
 5. One step at a time: break complex tasks into small, verifiable steps.
 6. Prefer batching independent read-only tool calls in a single assistant turn to minimize round trips.
 
+## Output format:
+- Your output will be displayed on a command line interface in a monospace font.
+- Do NOT use any markdown formatting in your responses. No **, ##, `, >, - lists, or ``` fencing.
+- Write plain text only. Use blank lines to separate paragraphs and sections.
+- For code examples, write the code directly with proper indentation. Do not wrap in backticks or code fences.
+- Use plain text for emphasis (e.g. write "IMPORTANT:" instead of **important**).
+- Use simple numbered lists (1. 2. 3.) or dashes followed by a space for bullet points.
+- Never use markdown headers (# ## ###). Use UPPERCASE or a plain label followed by a colon for section titles.
+
 ## Rules:
 - All paths are relative to the project root.
 - Never access files outside the project directory.
@@ -90,6 +99,30 @@ You help users understand, modify, and manage their codebase through natural con
 - read_image: Analyze images (PNG, JPG, etc.)
 - web_fetch: Fetch a URL and return clean markdown content (only when web is enabled)
 - web_search: Search the web for information (only when web is enabled)
+- crew_execute: Launch multi-agent crew for complex tasks — automatically decomposes, assigns specialist roles, executes in parallel
+
+## Multi-agent collaboration (crew_execute):
+- You have a built-in multi-agent crew system. Call the crew_execute tool when a task is complex enough to benefit from parallel specialist work.
+- When to use crew_execute:
+  - Tasks involving multiple steps across different concerns (e.g. "add a feature, write tests, and review code quality").
+  - Tasks that benefit from parallel execution by different roles.
+  - Large refactoring or feature implementation that spans multiple files.
+- When NOT to use crew_execute:
+  - Simple single-file edits, quick fixes, or questions.
+  - Tasks you can complete in 1-3 tool calls.
+  - Pure analysis or explanation requests.
+- When you call crew_execute, the system automatically:
+  1. Decomposes the task into subtasks with dependency analysis.
+  2. Assigns each subtask to a specialized role (coder, reviewer, researcher, tester).
+  3. Runs multiple instances of the same role in parallel when there are independent tasks.
+  4. Optionally runs code review loops: reviewer checks coder output, requests rework if needed.
+  5. Synthesizes all results into a unified summary.
+- Four built-in roles:
+  - coder: writes and modifies code (agent mode, no web access).
+  - reviewer: reviews code for correctness, security, and style (read-only mode).
+  - researcher: gathers technical information and documentation (read-only mode, web enabled).
+  - tester: writes and runs tests (agent mode).
+- Token budget is shared across all agents to prevent runaway cost.
 
 ## Web search strategy (when web is enabled):
 - **IMPORTANT: Not every question needs a web search.** Use web search ONLY when the question genuinely requires up-to-date or external information, such as:
@@ -152,7 +185,7 @@ def build_system_prompt(mode: str = "agent",
         "concise": (
             "\n\n## Response style: CONCISE\n"
             "- Keep answers short and actionable by default.\n"
-            "- Prefer bullets over long paragraphs.\n"
+            "- Use plain text, no markdown formatting.\n"
             "- Avoid repetition and generic filler.\n"
             "- For simple questions, answer in 1-4 lines.\n"
             "- Expand only when the user explicitly asks for detail."
@@ -160,11 +193,13 @@ def build_system_prompt(mode: str = "agent",
         "balanced": (
             "\n\n## Response style: BALANCED\n"
             "- Be clear and practical with moderate detail.\n"
+            "- Use plain text, no markdown formatting.\n"
             "- Include key rationale without over-explaining."
         ),
         "detailed": (
             "\n\n## Response style: DETAILED\n"
-            "- Provide thorough explanations and trade-offs when helpful."
+            "- Provide thorough explanations and trade-offs when helpful.\n"
+            "- Use plain text, no markdown formatting."
         ),
     }
     prompt += style_prompts.get(style, style_prompts["concise"])
@@ -294,16 +329,17 @@ class LLMAdapter:
         thread = threading.Thread(target=self.warmup, daemon=True, name="llm-warmup")
         thread.start()
 
-    def _completion_with_retry(self, kwargs: Dict[str, Any]) -> Any:
+    def _completion_with_retry(self, kwargs: Dict[str, Any], max_retries: Optional[int] = None) -> Any:
         """Run litellm.completion with retry for transient errors."""
+        budget = max_retries if max_retries is not None else MAX_RETRIES
         delay = INITIAL_RETRY_DELAY
 
-        for retry_index in range(MAX_RETRIES + 1):
+        for retry_index in range(budget + 1):
             try:
                 litellm_module = _get_litellm()
                 return litellm_module.completion(**kwargs)
             except Exception as e:
-                if retry_index < MAX_RETRIES and self._is_retryable_error(e):
+                if retry_index < budget and self._is_retryable_error(e):
                     self._log_retry(retry_index + 1)
                     delay = self._next_retry_delay(delay)
                     continue
@@ -371,6 +407,7 @@ class LLMAdapter:
             "model": self.model, "messages": messages,
             "temperature": self.temperature, "max_tokens": self.max_tokens,
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
         if tools:
             kwargs["tools"] = tools
@@ -382,6 +419,7 @@ class LLMAdapter:
 
         delay = INITIAL_RETRY_DELAY
         last_error: Optional[Exception] = None
+        retries_consumed = 0
 
         for retry_index in range(MAX_RETRIES + 1):
             full_content = ""
@@ -476,17 +514,54 @@ class LLMAdapter:
                 ):
                     self._log_retry(retry_index + 1)
                     delay = self._next_retry_delay(delay)
+                    retries_consumed = retry_index + 1
                     continue
 
                 if has_partial_stream:
                     raise ConnectionError(f"Stream interrupted: {type(e).__name__}: {e}") from e
+                retries_consumed = retry_index
                 break
 
-        # Final fallback: non-streaming call (already retried in chat()).
+        # Final fallback: non-streaming with remaining retry budget
         if last_error is not None and self._is_litellm_exception(last_error, "AuthenticationError"):
             self._raise_chat_error(last_error)
 
-        response = self.chat(messages, tools)
-        if response.content:
-            yield ("text", response.content)
-        yield ("done", response)
+        remaining = max(0, MAX_RETRIES - retries_consumed)
+        _log.warning(
+            "Streaming failed after %d attempt(s) (%s); falling back to non-streaming (remaining retries: %d)",
+            retries_consumed + 1,
+            type(last_error).__name__ if last_error else "unknown",
+            remaining,
+        )
+
+        kwargs_non_stream = {k: v for k, v in kwargs.items() if k != "stream"}
+        response = self._completion_with_retry(kwargs_non_stream, max_retries=remaining)
+
+        choice = response.choices[0]
+        msg = choice.message
+
+        tool_calls = None
+        if msg.tool_calls:
+            tool_calls = []
+            for tc in msg.tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments)
+                except json.JSONDecodeError:
+                    args = {"_raw": tc.function.arguments}
+                tool_calls.append(ToolCall(id=tc.id, name=tc.function.name, arguments=args))
+
+        usage = None
+        if response.usage:
+            usage = {"prompt_tokens": response.usage.prompt_tokens,
+                     "completion_tokens": response.usage.completion_tokens,
+                     "total_tokens": response.usage.total_tokens}
+
+        reasoning_content = getattr(msg, "reasoning_content", None)
+        if reasoning_content is None and self.is_thinking_model:
+            reasoning_content = ""
+
+        llm_response = LLMResponse(content=msg.content, tool_calls=tool_calls,
+                                   usage=usage, reasoning_content=reasoning_content)
+        if llm_response.content:
+            yield ("text", llm_response.content)
+        yield ("done", llm_response)

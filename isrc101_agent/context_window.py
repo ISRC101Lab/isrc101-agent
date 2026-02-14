@@ -1,6 +1,6 @@
 """Context window token budget and message trimming logic."""
 
-import hashlib
+import json
 from typing import List, Dict, Any, Optional, Tuple
 
 from .tokenizer import estimate_tokens, estimate_message_tokens
@@ -10,40 +10,27 @@ __all__ = ["ContextWindowManager"]
 MAX_TOOL_RESULT_CHARS = 12000  # ~4000 tokens
 
 
-def _msg_cache_key(msg: dict) -> Optional[str]:
-    """Build a stable cache key from message id + content hash.
-
-    Returns None when the message is unhashable (shouldn't happen in practice).
-    """
-    try:
-        parts = [str(id(msg))]
-        content = msg.get("content") or ""
-        parts.append(hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest())
-        tc = msg.get("tool_calls")
-        if tc is not None:
-            parts.append(str(len(tc)))
-        return ":".join(parts)
-    except Exception:
-        return None
-
-
 class ContextWindowManager:
     def __init__(self, model: str, max_tokens: int, context_window: int = 128000):
         self.model = model
         self.max_tokens = max_tokens
         self.context_window = context_window
-        self._token_cache: Dict[str, int] = {}
+        # Cache keyed by id(msg) — safe because conversation dicts are never
+        # mutated in-place and invalidate_token_cache() is called on compaction.
+        self._token_cache: Dict[int, int] = {}
+        # Scale tool result truncation with context window (12000 for 128K, min 4000)
+        self.max_tool_result_chars = max(4000, int(12000 * (context_window / 128000)))
 
     def estimate_tokens(self, text: str) -> int:
         return estimate_tokens(text, self.model)
 
     def estimate_message_tokens(self, msg: dict) -> int:
-        key = _msg_cache_key(msg)
-        if key is not None and key in self._token_cache:
-            return self._token_cache[key]
+        key = id(msg)
+        cached = self._token_cache.get(key)
+        if cached is not None:
+            return cached
         result = estimate_message_tokens(msg, self.model)
-        if key is not None:
-            self._token_cache[key] = result
+        self._token_cache[key] = result
         return result
 
     def invalidate_token_cache(self):
@@ -78,11 +65,6 @@ class ContextWindowManager:
         if start >= end:
             return 0
         return prefix[end] - prefix[start]
-
-    def sum_message_tokens(self, conversation: list, start: int, end: int) -> int:
-        if start >= end:
-            return 0
-        return sum(self.estimate_message_tokens(conversation[i]) for i in range(start, end))
 
     @staticmethod
     def is_safe_split_message(msg: Dict[str, Any]) -> bool:
@@ -213,21 +195,31 @@ class ContextWindowManager:
 
         return start
 
-    @staticmethod
-    def truncate_tool_result(result: str) -> str:
-        if len(result) <= MAX_TOOL_RESULT_CHARS:
+    def truncate_tool_result(self, result: str) -> str:
+        limit = self.max_tool_result_chars
+        if len(result) <= limit:
             return result
-        half = MAX_TOOL_RESULT_CHARS // 2
+        half = limit // 2
         lines_total = result.count("\n") + 1
         return (result[:half]
                 + f"\n\n... [truncated: {lines_total} lines, {len(result):,} chars"
                   f" → keeping first/last portions] ...\n\n"
                 + result[-half:])
 
-    def prepare_messages(self, conversation: list, system_prompt: str, console) -> list:
+    def prepare_messages(self, conversation: list, system_prompt: str, console,
+                         tool_schemas: Optional[list] = None) -> list:
         system_msg = {"role": "system", "content": system_prompt}
 
-        budget = self.context_window - self.max_tokens - 1000
+        # Tool schemas consume context window tokens
+        tool_schema_tokens = 0
+        if tool_schemas:
+            try:
+                tool_schema_tokens = self.estimate_tokens(json.dumps(tool_schemas))
+            except Exception:
+                tool_schema_tokens = len(tool_schemas) * 150  # conservative fallback
+
+        safety_margin = 2000  # increased from 1000
+        budget = self.context_window - self.max_tokens - safety_margin - tool_schema_tokens
         system_tokens = self.estimate_tokens(system_prompt) + 4
         available = budget - system_tokens
 

@@ -57,13 +57,15 @@ _I = lambda desc, **kw: {"type": "integer", "description": desc, **kw}
 
 class ToolRegistry:
     def __init__(self, project_root: str, blocked_commands: list = None,
-                 command_timeout: int = 30, commit_prefix: str = "isrc101: "):
+                 command_timeout: int = 30, commit_prefix: str = "isrc101: ",
+                 config=None):
         self.file_ops = FileOps(project_root)
         self.shell = ShellExecutor(project_root, blocked_commands, command_timeout)
         self.git = GitOps(project_root, commit_prefix=commit_prefix)
         self.web = WebOps()
         self._web_enabled = False
         self._mode = "agent"
+        self._config = config
         self._tools: Dict[str, _ToolEntry] = {}
         self._metrics: Dict[str, ToolMetrics] = {}
         self._schemas_cache: list = None
@@ -212,6 +214,20 @@ class ToolRegistry:
             mode="all",
         )
 
+        # ── Crew (multi-agent collaboration) ──
+        if self._config is not None:
+            self._tools["crew_execute"] = T(
+                handler=lambda **a: self._handle_crew_execute(a["task"]),
+                schema=S("crew_execute",
+                         "Launch multi-agent crew for complex tasks that benefit from "
+                         "parallel work by specialist roles (coder, reviewer, researcher, tester). "
+                         "Automatically decomposes the task, assigns roles, executes in parallel, "
+                         "and synthesizes results. Use for multi-step tasks like 'add feature X with tests and review'.",
+                         {"task": _S("Detailed description of the task for the crew to execute")},
+                         ["task"]),
+                mode="code", writes=True,
+            )
+
     # ── Helper handlers ──
 
     def _handle_read_image(self, path: str) -> str:
@@ -234,6 +250,16 @@ class ToolRegistry:
         elif isinstance(domains, list):
             domain_list = [str(item).strip() for item in domains if str(item).strip()]
         return self.web.search(query, max_results, domains=domain_list)
+
+    def _handle_crew_execute(self, task: str) -> str:
+        if not self._config:
+            return "Error: crew requires config."
+        if not task.strip():
+            return "Error: task description is empty."
+        from ..crew import Crew
+        from rich.console import Console
+        crew = Crew(self._config, Console())
+        return crew.run(task)
 
     # ── Public API ──
 
@@ -335,6 +361,19 @@ class ToolRegistry:
         "web_fetch",
         "web_search",
     }
+
+    def restrict_to(self, allowed_names: set):
+        """Keep only the named tools, removing all others."""
+        to_remove = [n for n in self._tools if n not in allowed_names]
+        for n in to_remove:
+            del self._tools[n]
+        self._schemas_cache = None
+
+    def block_tools(self, blocked_names: set):
+        """Remove the named tools."""
+        for n in blocked_names:
+            self._tools.pop(n, None)
+        self._schemas_cache = None
 
     @classmethod
     def needs_confirmation(cls, tool_name: str) -> bool:

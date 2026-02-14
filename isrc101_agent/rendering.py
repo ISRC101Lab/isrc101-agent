@@ -5,7 +5,6 @@ import shutil
 from pathlib import Path
 from typing import List, Dict, Optional
 from rich.console import Console
-from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
 from rich.syntax import Syntax
@@ -81,10 +80,7 @@ def get_icon(unicode_icon: str) -> str:
 # ── Code block parsing for syntax highlighting ──
 
 # Pattern to match fenced code blocks: ```language\ncode\n```
-_CODE_BLOCK_RE = re.compile(
-    r'```(\w+)?\n(.*?)\n```',
-    re.DOTALL
-)
+
 
 
 # ── Adaptive truncation based on terminal size ──
@@ -231,43 +227,6 @@ def render_file_tree(
     console.print(tree)
 
 
-def _split_markdown_with_code(content: str):
-    """Split markdown into text and code block segments.
-
-    Returns a list of dicts with 'type' (text|code), 'content', and 'lang'.
-    """
-    segments = []
-    last_end = 0
-
-    for match in _CODE_BLOCK_RE.finditer(content):
-        # Add text before code block
-        if match.start() > last_end:
-            segments.append({
-                'type': 'text',
-                'content': content[last_end:match.start()]
-            })
-
-        # Add code block
-        lang = match.group(1) or 'text'
-        code = match.group(2)
-        segments.append({
-            'type': 'code',
-            'lang': lang.lower(),
-            'content': code
-        })
-
-        last_end = match.end()
-
-    # Add remaining text
-    if last_end < len(content):
-        segments.append({
-            'type': 'text',
-            'content': content[last_end:]
-        })
-
-    return segments if segments else [{'type': 'text', 'content': content}]
-
-
 def _detect_language_from_path(path: str) -> str:
     """Detect language from file extension."""
     ext_map = {
@@ -334,34 +293,11 @@ def render_error(console: Console, message: str):
 
 
 def render_assistant_message(console: Console, content: str):
-    """Render assistant message with syntax highlighting for code blocks."""
+    """Render assistant message as plain text (no markdown parsing)."""
     console.print()
     if not content.strip():
-        console.print(content)
         return
-
-    segments = _split_markdown_with_code(content)
-
-    for segment in segments:
-        if segment['type'] == 'code':
-            # Render code block with syntax highlighting
-            try:
-                syntax = Syntax(
-                    segment['content'],
-                    segment['lang'],
-                    theme="monokai",
-                    line_numbers=True,
-                    word_wrap=False,
-                    background_color="default"
-                )
-                console.print(syntax)
-            except Exception:
-                # Fallback to plain text if syntax highlighting fails
-                console.print(f"```{segment['lang']}\n{segment['content']}\n```")
-        else:
-            # Render regular markdown text
-            if segment['content'].strip():
-                console.print(Markdown(segment['content']))
+    console.print(content, markup=False, highlight=False)
 
 
 def render_tool_call(console: Console, name, args, index=None, total=None):

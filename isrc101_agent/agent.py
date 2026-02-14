@@ -6,7 +6,7 @@ import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Callable, List, Dict, Any, Optional, Tuple
 
 from rich.console import Console
 from rich.panel import Panel
@@ -169,7 +169,9 @@ class Agent:
                  tool_parallelism: int = 4,
                  result_truncation_mode: str = "auto",
                  display_file_tree: str = "auto",
-                 config=None):
+                 quiet: bool = False,
+                 config=None,
+                 iteration_hook: Optional[Callable] = None):
         self.llm = llm
         self.tools = tools
         self.max_iterations = max_iterations
@@ -179,6 +181,9 @@ class Agent:
         self.reasoning_display = reasoning_display
         self.web_display = web_display
         self.answer_style = answer_style
+        self.quiet = quiet
+        self.token_callback: Optional[Callable[[int], None]] = None
+        self.iteration_hook: Optional[Callable] = iteration_hook
         self.config = config  # Store config for error hints
         grounded_mode = str(grounded_web_mode or "strict").strip().lower()
         if grounded_mode not in self.GROUNDED_WEB_MODES:
@@ -225,8 +230,15 @@ class Agent:
         self.total_tokens = 0
         self._files_modified = False
         self.current_plan: Optional[Plan] = None
-        self._web_fetch_cache: Dict[str, str] = {}  # URL → raw result (session-level)
-        self._web_search_cache: Dict[str, str] = {}  # query → raw result (session-level)
+        self._web_cache_lock = threading.Lock()
+        self._web_fetch_cache: Dict[str, str] = {}  # URL -> raw result (session-level)
+        self._web_search_cache: Dict[str, str] = {}  # query -> raw result (session-level)
+        self._web_cache_max = 100  # max entries per cache to prevent unbounded growth
+
+    def _print(self, *args, **kwargs):
+        """Console print that respects quiet mode."""
+        if not self.quiet:
+            console.print(*args, **kwargs)
 
     @property
     def mode(self):
@@ -336,7 +348,8 @@ class Agent:
             raise ConnectionError(f"Request error: {type(e).__name__}: {e}")
 
     def _render_assistant_message(self, content: str):
-        _render_assistant_message_fn(console, content)
+        if not self.quiet:
+            _render_assistant_message_fn(console, content)
 
     def _parse_grounding_payload(self, content: str) -> Optional[dict]:
         return self._grounding.parse_payload(content)
@@ -407,6 +420,63 @@ class Agent:
     def _capture_web_search_evidence(self, result: str):
         self._grounding.capture_search_evidence(result)
 
+    def _retry_grounding(self, response, base_system, user_message):
+        """Handle grounding validation retries without consuming main loop iterations.
+
+        Returns (finalized_content, response) where response may be updated.
+        """
+        retries_left = self.grounded_retry
+        current = response
+
+        for _ in range(self.grounded_retry + 2):
+            finalized, feedback = self._finalize_assistant_content(current.content)
+            if not feedback:
+                return finalized, current
+
+            if retries_left > 0:
+                retries_left -= 1
+                self._print(
+                    f"  [{_T_WARN}]⚠ Grounding validation failed, retrying ({retries_left} left)…[/{_T_WARN}]"
+                )
+                system = self._compose_system_prompt(base_system, feedback)
+                messages = self._prepare_messages(system)
+                try:
+                    current = self._request_response(messages, stream=False)
+                except ConnectionError:
+                    return self._render_grounding_refusal(feedback), current
+                if current.usage:
+                    self.total_tokens += current.usage.get("total_tokens", 0)
+                    if self.token_callback:
+                        self.token_callback(current.usage.get("total_tokens", 0))
+                if not current.content:
+                    return self._render_grounding_refusal(feedback), current
+                continue
+
+            # Supplement evidence
+            fetched, timed_out = self._supplement_grounding_sources(user_message, feedback)
+            if fetched > 0:
+                self._print(
+                    f"  [{_T_INFO}]↻ Grounding supplement fetched {fetched} additional source(s); retrying…[/{_T_INFO}]"
+                )
+                system = self._compose_system_prompt(base_system, feedback)
+                messages = self._prepare_messages(system)
+                try:
+                    current = self._request_response(messages, stream=False)
+                except ConnectionError:
+                    return self._render_grounding_refusal(feedback), current
+                if current.usage:
+                    self.total_tokens += current.usage.get("total_tokens", 0)
+                    if self.token_callback:
+                        self.token_callback(current.usage.get("total_tokens", 0))
+                if current.content:
+                    continue
+
+            if timed_out and self.grounded_partial_on_timeout and self._turn_source_urls():
+                return self._render_grounding_partial(feedback), current
+            return self._render_grounding_refusal(feedback), current
+
+        return self._render_grounding_refusal("Grounding exhausted"), current
+
     def chat(self, user_message: str) -> str:
         self.conversation.append({"role": "user", "content": user_message})
         self._files_modified = False
@@ -415,6 +485,8 @@ class Agent:
         grounding_retries_left = self.grounded_retry
         self._web_tool_calls_this_turn = 0
         self._max_web_tool_calls_per_turn = self.max_web_calls_per_turn
+        _empty_streak = 0
+        _MAX_EMPTY = 3
 
         base_system = build_system_prompt(
             self._mode,
@@ -423,6 +495,8 @@ class Agent:
         )
 
         for _ in range(self.max_iterations):
+            if self.iteration_hook:
+                self.iteration_hook()
             system = self._compose_system_prompt(base_system, grounding_feedback)
             messages = self._prepare_messages(system)
             use_stream = not self._should_enforce_grounding()
@@ -436,32 +510,19 @@ class Agent:
 
             if response.usage:
                 self.total_tokens += response.usage.get("total_tokens", 0)
+                if self.token_callback:
+                    self.token_callback(response.usage.get("total_tokens", 0))
 
             if response.has_tool_calls():
+                _empty_streak = 0
                 self._handle_tool_calls(response)
                 grounding_feedback = ""
                 grounding_retries_left = self.grounded_retry
                 continue
 
             if response.content:
-                finalized_content, retry_feedback = self._finalize_assistant_content(response.content)
-                if retry_feedback:
-                    if grounding_retries_left > 0:
-                        grounding_retries_left -= 1
-                        grounding_feedback = retry_feedback
-                        console.print(f"  [{_T_WARN}]⚠ Grounding validation failed, retrying ({grounding_retries_left} left)…[/{_T_WARN}]")
-                        continue
-                    fetched_count, timed_out = self._supplement_grounding_sources(user_message, retry_feedback)
-                    if fetched_count > 0:
-                        grounding_feedback = retry_feedback
-                        console.print(
-                            f"  [{_T_INFO}]↻ Grounding supplement fetched {fetched_count} additional source(s); retrying…[/{_T_INFO}]"
-                        )
-                        continue
-                    if timed_out and self.grounded_partial_on_timeout and self._turn_source_urls():
-                        finalized_content = self._render_grounding_partial(retry_feedback)
-                    else:
-                        finalized_content = self._render_grounding_refusal(retry_feedback)
+                _empty_streak = 0
+                finalized_content, response = self._retry_grounding(response, base_system, user_message)
 
                 assistant_msg = {"role": "assistant", "content": finalized_content}
                 if response.reasoning_content is not None:
@@ -473,25 +534,43 @@ class Agent:
                 if self._files_modified and self.auto_commit and self.tools.git.available:
                     commit_hash = self.tools.git.auto_commit()
                     if commit_hash:
-                        console.print()
-                        console.print(f"  [{_T_SUCCESS}]⎇[/{_T_SUCCESS}] [{_T_MUTED}]committed[/{_T_MUTED}] [bold {_T_TEXT}]{commit_hash}[/bold {_T_TEXT}]")
+                        self._print()
+                        self._print(f"  [{_T_SUCCESS}]⎇[/{_T_SUCCESS}] [{_T_MUTED}]committed[/{_T_MUTED}] [bold {_T_TEXT}]{commit_hash}[/bold {_T_TEXT}]")
                     elif self.tools.git.has_changes():
-                        console.print()
-                        console.print("  [{warn}]⚠ auto-commit skipped[/{warn}] [{dim}](check git status)[/{dim}]".format(warn=_T_WARN, dim=_T_DIM))
+                        self._print()
+                        self._print("  [{warn}]⚠ auto-commit skipped[/{warn}] [{dim}](check git status)[/{dim}]".format(warn=_T_WARN, dim=_T_DIM))
                 # Auto-parse structured plan output (available in all modes)
                 plan = self._try_parse_plan(finalized_content)
                 if plan:
                     self.current_plan = plan
-                    console.print()
-                    console.print(f"  [{_T_INFO}]▣[/{_T_INFO}] [{_T_MUTED}]Plan parsed:[/{_T_MUTED}] "
+                    self._print()
+                    self._print(f"  [{_T_INFO}]▣[/{_T_INFO}] [{_T_MUTED}]Plan parsed:[/{_T_MUTED}] "
                                   f"[bold {_T_TEXT}]{len(plan.steps)} steps[/bold {_T_TEXT}] "
                                   f"[{_T_DIM}]— use[/{_T_DIM}] [bold {_T_INFO}]/plan execute[/bold {_T_INFO}] [{_T_DIM}]to run[/{_T_DIM}]")
                 return finalized_content
 
-            console.print(f"[{_T_DIM}]  (empty response, retrying...)[/{_T_DIM}]")
+            _empty_streak += 1
+            _log.warning("Empty LLM response (streak: %d/%d)", _empty_streak, _MAX_EMPTY)
+            self._print(f"[{_T_DIM}]  (empty response, retrying {_empty_streak}/{_MAX_EMPTY}...)[/{_T_DIM}]")
+            if _empty_streak >= _MAX_EMPTY:
+                msg = f"Stopping: {_MAX_EMPTY} consecutive empty responses."
+                self._print(f"\n[{_T_WARN}]{msg}[/{_T_WARN}]")
+                return msg
 
-        msg = f"⚠ Reached max iterations ({self.max_iterations})."
-        console.print(f"\n[{_T_WARN}]{msg}[/{_T_WARN}]")
+        # Clean up orphan tool calls before exiting
+        if self.conversation:
+            last = self.conversation[-1]
+            if last.get("role") == "assistant" and last.get("tool_calls"):
+                existing_ids = {m.get("tool_call_id") for m in self.conversation if m.get("role") == "tool"}
+                for call_id in self._assistant_tool_call_ids(last):
+                    if call_id not in existing_ids:
+                        self.conversation.append({
+                            "role": "tool", "tool_call_id": call_id,
+                            "content": "(iteration limit — tool not executed)",
+                        })
+
+        msg = f"Reached max iterations ({self.max_iterations})."
+        self._print(f"\n[{_T_WARN}]{msg}[/{_T_WARN}]")
         return msg
 
     # ── Context window management (delegated to ContextWindowManager) ──
@@ -511,13 +590,14 @@ class Agent:
     def _repair_tool_pairs_in_suffix(self, start: int, available_tokens: Optional[int] = None) -> int:
         return self._ctx.repair_tool_pairs_in_suffix(self.conversation, start, available_tokens)
 
-    MAX_TOOL_RESULT_CHARS = 12000  # ~4000 tokens
-
     def _truncate_tool_result(self, result: str) -> str:
         return self._ctx.truncate_tool_result(result)
 
     def _prepare_messages(self, system_prompt: str) -> list:
-        return self._ctx.prepare_messages(self.conversation, system_prompt, console)
+        return self._ctx.prepare_messages(
+            self.conversation, system_prompt, console,
+            tool_schemas=self.tools.schemas,
+        )
 
     # ── Streaming response ─────────────────────
 
@@ -608,7 +688,7 @@ class Agent:
             file_ops = [tc for tc in response.tool_calls if tc.name in ToolRegistry.WRITE_TOOLS]
             should_show_tree = len(file_ops) >= 5
 
-        if should_show_tree and response.tool_calls:
+        if should_show_tree and response.tool_calls and not self.quiet:
             # Build file operations list for tree rendering
             file_operations = []
             for tc in response.tool_calls:
@@ -631,34 +711,36 @@ class Agent:
 
         for i, tc in enumerate(response.tool_calls, 1):
             if i > 1 and total_calls > 1:
-                console.print(f"     [{_T_BORDER}]·[/{_T_BORDER}]")
+                self._print(f"     [{_T_BORDER}]·[/{_T_BORDER}]")
             self._render_tool_call(tc.name, tc.arguments, index=i, total=total_calls)
 
             if not self.auto_confirm and ToolRegistry.needs_confirmation(tc.name):
                 if not self._confirm(tc.name, tc.arguments):
                     self.conversation.append({"role": "tool", "tool_call_id": tc.id,
                                               "content": "⚠ User denied."})
-                    console.print(f"  [{_T_WARN}]↳ skipped[/{_T_WARN}]")
+                    self._print(f"  [{_T_WARN}]↳ skipped[/{_T_WARN}]")
                     continue
 
             # ── web tool call limit: prevent infinite web loops ──
             if tc.name in ("web_search", "web_fetch"):
-                if self._web_tool_calls_this_turn >= self._max_web_tool_calls_per_turn:
-                    limit_msg = (
-                        f"⚠ Web tool call limit reached ({self._max_web_tool_calls_per_turn} calls this turn). "
-                        "Please answer based on the information already gathered, or tell the user "
-                        "you need more specific guidance."
-                    )
-                    self.conversation.append({"role": "tool", "tool_call_id": tc.id,
-                                              "content": limit_msg})
-                    console.print(f"  [{_T_WARN}]↳ web call limit reached[/{_T_WARN}]")
-                    continue
-                self._web_tool_calls_this_turn += 1
+                with self._web_cache_lock:
+                    if self._web_tool_calls_this_turn >= self._max_web_tool_calls_per_turn:
+                        limit_msg = (
+                            f"⚠ Web tool call limit reached ({self._max_web_tool_calls_per_turn} calls this turn). "
+                            "Please answer based on the information already gathered, or tell the user "
+                            "you need more specific guidance."
+                        )
+                        self.conversation.append({"role": "tool", "tool_call_id": tc.id,
+                                                  "content": limit_msg})
+                        self._print(f"  [{_T_WARN}]↳ web call limit reached[/{_T_WARN}]")
+                        continue
+                    self._web_tool_calls_this_turn += 1
 
             # ── web_search dedup: return cached result if same query already searched ──
             if tc.name == "web_search":
                 search_query = tc.arguments.get("query", "")
-                cached_search = self._web_search_cache.get(search_query)
+                with self._web_cache_lock:
+                    cached_search = self._web_search_cache.get(search_query)
                 if cached_search is not None:
                     result, elapsed = cached_search, 0.0
                     self._render_result(tc.name, result, elapsed, tc.arguments)
@@ -670,7 +752,8 @@ class Agent:
             # ── web_fetch dedup: return cached result if URL already fetched ──
             if tc.name == "web_fetch":
                 fetch_url = tc.arguments.get("url", "")
-                cached = self._web_fetch_cache.get(fetch_url)
+                with self._web_cache_lock:
+                    cached = self._web_fetch_cache.get(fetch_url)
                 if cached is not None:
                     result, elapsed = cached, 0.0
                     self._render_result(tc.name, result, elapsed, tc.arguments)
@@ -690,11 +773,17 @@ class Agent:
                         "web_fetch": "fetching URL",
                         "web_search": "searching web"
                     }.get(tc.name, "running")
-                    with ProgressContext(console, operation_name):
+                    if not self.quiet:
+                        with ProgressContext(console, operation_name):
+                            result, elapsed = self._execute_single_tool_call(tc)
+                    else:
                         result, elapsed = self._execute_single_tool_call(tc)
                 else:
-                    with Status(f"  [{_T_DIM}]  running…[/{_T_DIM}]",
-                                console=console, spinner="dots", spinner_style=_T_ACCENT):
+                    if not self.quiet:
+                        with Status(f"  [{_T_DIM}]  running…[/{_T_DIM}]",
+                                    console=console, spinner="dots", spinner_style=_T_ACCENT):
+                            result, elapsed = self._execute_single_tool_call(tc)
+                    else:
                         result, elapsed = self._execute_single_tool_call(tc)
             self._render_result(tc.name, result, elapsed, tc.arguments)
 
@@ -706,7 +795,9 @@ class Agent:
             if tc.name == "web_fetch":
                 fetch_url = tc.arguments.get("url", "")
                 if not result.startswith(("Web error:", "Error:", "⚠", "Blocked:", "Timed out")):
-                    self._web_fetch_cache[fetch_url] = result
+                    with self._web_cache_lock:
+                        if len(self._web_fetch_cache) < self._web_cache_max:
+                            self._web_fetch_cache[fetch_url] = result
                 self._capture_web_fetch_evidence(result)
                 stored_result = self._summarize_web_for_context(result)
                 self.conversation.append({"role": "tool", "tool_call_id": tc.id, "content": stored_result})
@@ -715,7 +806,9 @@ class Agent:
             if tc.name == "web_search":
                 search_query = tc.arguments.get("query", "")
                 if not result.startswith(("Web error:", "Error:", "⚠", "Blocked:", "Timed out")):
-                    self._web_search_cache[search_query] = result
+                    with self._web_cache_lock:
+                        if len(self._web_search_cache) < self._web_cache_max:
+                            self._web_search_cache[search_query] = result
                 self._capture_web_search_evidence(result)
 
             if tc.name in ToolRegistry.WRITE_TOOLS:
@@ -728,7 +821,7 @@ class Agent:
 
         if total_calls > 1:
             batch_elapsed = time.monotonic() - batch_start
-            console.print(f"\n  [{_T_SEP}]─ {total_calls} tools · {batch_elapsed:.1f}s ─[/{_T_SEP}]")
+            self._print(f"\n  [{_T_SEP}]─ {total_calls} tools · {batch_elapsed:.1f}s ─[/{_T_SEP}]")
 
     def _summarize_web_for_context(self, result: str) -> str:
         return _summarize_web_for_context_fn(
@@ -765,18 +858,22 @@ class Agent:
     # ── Rendering (delegated to rendering.py) ──────
 
     def _render_error(self, message: str):
-        _render_error_fn(console, message)
+        if not self.quiet:
+            _render_error_fn(console, message)
 
     def _render_tool_call(self, name, args, index=None, total=None):
-        _render_tool_call_fn(console, name, args, index, total)
+        if not self.quiet:
+            _render_tool_call_fn(console, name, args, index, total)
 
     def _render_result(self, name, result, elapsed: float = 0, tool_arguments: dict = None):
-        _render_result_fn(console, name, result, elapsed,
-                          self.web_display, self._format_web_result_preview, tool_arguments,
-                          self.result_truncation_mode)
+        if not self.quiet:
+            _render_result_fn(console, name, result, elapsed,
+                              self.web_display, self._format_web_result_preview, tool_arguments,
+                              self.result_truncation_mode)
 
     def _render_write_diff(self, tool_name: str, arguments: dict):
-        _render_write_diff_fn(console, tool_name, arguments)
+        if not self.quiet:
+            _render_write_diff_fn(console, tool_name, arguments)
 
     def _inject_error_hint(self, tool_name: str, arguments: dict, result: str) -> str:
         return _inject_error_hint_fn(tool_name, arguments, result, self.config)
@@ -877,4 +974,6 @@ class Agent:
         self.conversation.clear()
         self.total_tokens = 0
         self._grounding.reset_turn()
-        self._web_fetch_cache.clear()
+        with self._web_cache_lock:
+            self._web_fetch_cache.clear()
+            self._web_search_cache.clear()

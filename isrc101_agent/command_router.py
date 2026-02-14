@@ -1310,6 +1310,16 @@ def _cmd_theme(ctx: CommandContext, args: list[str]) -> str:
     return ""
 
 
+def _cmd_crew(ctx: CommandContext, args: list[str]) -> str:
+    from .crew import Crew
+    crew = Crew(ctx.config, ctx.console)
+    result = crew.run(" ".join(args))
+    if result:
+        from .rendering import render_assistant_message
+        render_assistant_message(ctx.console, result)
+    return ""
+
+
 COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "/quit": _cmd_quit,
     "/help": _cmd_help,
@@ -1331,4 +1341,5 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "/plan": _cmd_plan,
     "/reset": _cmd_reset,
     "/theme": _cmd_theme,
+    "/crew": _cmd_crew,
 }

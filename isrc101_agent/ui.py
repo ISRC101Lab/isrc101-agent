@@ -76,6 +76,7 @@ SLASH_COMMAND_SPECS: tuple[SlashCommandSpec, ...] = (
     SlashCommandSpec("/stats",    "/stats",       "Show token usage and cost for this session", ("tokens", "usage", "cost")),
     SlashCommandSpec("/git",      "/git",         "Show git branch, status, and recent commits", ("branch", "commit", "status")),
     SlashCommandSpec("/reset",    "/reset",       "Clear conversation history and start fresh", ("clear", "conversation")),
+    SlashCommandSpec("/crew",     "/crew <task>",  "Run a multi-agent crew to collaboratively complete a task", ("multi", "agent", "parallel", "team")),
     SlashCommandSpec("/quit",     "/quit",        "Exit the session (auto-saves conversation)", ("exit",)),
 )
 

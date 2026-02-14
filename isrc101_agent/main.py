@@ -150,6 +150,7 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
         blocked_commands=config.blocked_commands,
         command_timeout=config.command_timeout,
         commit_prefix=config.commit_prefix,
+        config=config,
     )
     tools.web_enabled = config.web_enabled
     profiler.mark("tools.init")
@@ -325,6 +326,7 @@ def ask(message, model, project_dir, mode):
     tools = ToolRegistry(
         project_root=str(project_root),
         commit_prefix=config.commit_prefix,
+        config=config,
     )
     tools.web_enabled = config.web_enabled
 

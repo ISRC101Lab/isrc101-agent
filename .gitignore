@@ -6,3 +6,6 @@ dist/
 build/
 .env
 .agent.conf.yml
+
+# isrc101-agent undo history
+.isrc101-undo/

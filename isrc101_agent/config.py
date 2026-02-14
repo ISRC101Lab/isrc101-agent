@@ -461,6 +461,7 @@ class Config:
     result_truncation_mode: str = "auto"
     display_file_tree: str = "auto"
     use_unicode: bool = True  # Accessibility: Unicode vs ASCII icons
+    crew_config: Dict = field(default_factory=dict)  # crew: section from YAML
     project_root: Optional[str] = None
     _config_source: str = ""
 
@@ -669,6 +670,9 @@ class Config:
             self.enabled_skills = list(DEFAULT_ENABLED_SKILLS)
         if "blocked-commands" in data:
             self.blocked_commands = data["blocked-commands"]
+
+        # Crew multi-agent configuration
+        self.crew_config = data.get("crew", {})
 
         self.models = {}
         for name, m in data.get("models", {}).items():
