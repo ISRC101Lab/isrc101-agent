@@ -217,6 +217,7 @@ class CrewRenderer:
         start_times: Dict[str, float],
         budget_used: int,
         budget_max: int,
+        per_agent_limit: int = 0,
     ) -> Panel:
         """Build a real-time DAG flowchart panel.
 
@@ -313,7 +314,10 @@ class CrewRenderer:
         progress.append("\n  Progress: ", style=THEME_DIM)
         progress.append(f"{bar} ", style=bar_color)
         progress.append(f"{done_count}/{total_count}", style=f"bold {bar_color}")
-        progress.append(f"  |  Budget: {budget_used:,}/{budget_max:,} ({budget_pct}%)", style=THEME_DIM)
+        budget_info = f"  |  Budget: {budget_used:,}/{budget_max:,} ({budget_pct}%)"
+        if per_agent_limit > 0:
+            budget_info += f"  |  Per-agent: {per_agent_limit:,}"
+        progress.append(budget_info, style=THEME_DIM)
 
         # ── Event log ──
         events = Text()

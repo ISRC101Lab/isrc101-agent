@@ -17,7 +17,8 @@ class Crew:
 
         crew_cfg = getattr(config, "crew_config", None) or {}
         self.max_parallel = crew_cfg.get("max-parallel", 2)
-        self.token_budget = crew_cfg.get("token-budget", 200_000)
+        self.per_agent_budget = crew_cfg.get("per-agent-budget", 200_000)
+        self.token_budget = crew_cfg.get("token-budget", 0)  # 0 = auto-scale
         self.auto_review = crew_cfg.get("auto-review", True)
         self.max_rework = crew_cfg.get("max-rework", 2)
         self.message_timeout = crew_cfg.get("message-timeout", 60.0)
@@ -39,6 +40,7 @@ class Crew:
             console=self.console,
             max_parallel=self.max_parallel,
             token_budget=self.token_budget,
+            per_agent_budget=self.per_agent_budget,
             auto_review=self.auto_review,
             max_rework=self.max_rework,
             message_timeout=self.message_timeout,

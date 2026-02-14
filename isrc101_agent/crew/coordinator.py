@@ -83,7 +83,8 @@ class Coordinator:
         config: Config,
         console: Console,
         max_parallel: int = 2,
-        token_budget: int = 200_000,
+        token_budget: int = 0,
+        per_agent_budget: int = 200_000,
         auto_review: bool = True,
         max_rework: int = 2,
         message_timeout: float = 60.0,
@@ -92,11 +93,14 @@ class Coordinator:
         self.config = config
         self.console = console
         self.max_parallel = max_parallel
+        self._token_budget_override = token_budget   # 0 = auto-scale
+        self._per_agent_budget = per_agent_budget
         self.auto_review = auto_review
         self.max_rework = max_rework
         self.message_timeout = message_timeout
         self.task_timeout = task_timeout
-        self.budget = SharedTokenBudget(token_budget)
+        # Budget is created after decomposition so we know the task count
+        self.budget: SharedTokenBudget = None  # type: ignore[assignment]
         self.crew_context = CrewContext()
         self.renderer = CrewRenderer(console)
         self.roles = load_roles_from_config(config)
@@ -112,11 +116,21 @@ class Coordinator:
 
     def run(self, request: str) -> str:
         """Full crew execution: decompose -> event loop -> synthesize."""
-        # Phase 1: Decompose
+        # Phase 1: Decompose (uses a temporary budget for the decomposition call)
         self.console.print()
         tasks = self._decompose(request)
         if not tasks:
             return "Failed to decompose the request into tasks."
+
+        # Create budget now that we know the task count — auto-scale if no override
+        if self._token_budget_override > 0:
+            total_budget = self._token_budget_override
+        else:
+            total_budget = self._per_agent_budget * len(tasks)
+        self.budget = SharedTokenBudget(total_budget, per_agent_limit=self._per_agent_budget)
+        # Apply tokens consumed during decomposition
+        if getattr(self, '_decompose_tokens', 0) > 0:
+            self.budget.consume(self._decompose_tokens)
 
         self.board.add_tasks(tasks)
         self.renderer.render_decomposition(tasks)
@@ -172,8 +186,8 @@ class Coordinator:
             self.console.print(f"  [red]Decomposition failed: {e}[/red]")
             return []
 
-        if response.usage:
-            self.budget.consume(response.usage.get("total_tokens", 0))
+        # Stash decomposition tokens — will be applied to budget after creation
+        self._decompose_tokens = response.usage.get("total_tokens", 0) if response.usage else 0
 
         return self._parse_tasks(response.content or "")
 
@@ -316,6 +330,7 @@ class Coordinator:
             start_times=self._task_start_times,
             budget_used=self.budget.used,
             budget_max=self.budget.max_tokens,
+            per_agent_limit=self.budget.per_agent_limit,
         )
 
     def _event_loop(self):

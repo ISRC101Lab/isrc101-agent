@@ -1,5 +1,6 @@
 """Role definitions and agent factory for crew members."""
 
+import uuid
 from dataclasses import dataclass, field
 from typing import Optional, List, TYPE_CHECKING
 
@@ -173,18 +174,22 @@ def create_agent_for_role(
         answer_style="concise",
         quiet=True,  # Suppress console output in crew mode
         config=config,
-        auto_compact_threshold=70,  # Auto-compact at 70% context usage
+        auto_compact_threshold=85,  # Auto-compact at 85% context usage
     )
 
     # Attach budget reference for token tracking
     agent._crew_budget = shared_budget
 
-    # Budget enforcement callback — soft stop on exhaustion
+    # Unique agent ID for per-agent budget tracking
+    agent_id = f"{role.name}-{uuid.uuid4().hex[:8]}"
+    agent._crew_agent_id = agent_id
+
+    # Budget enforcement callback — soft stop on per-agent or global exhaustion.
     # Instead of raising immediately, set a flag so the agent can
     # finish its current iteration gracefully before stopping.
     def _budget_callback(tokens: int):
-        shared_budget.consume(tokens)
-        if shared_budget.is_exhausted():
+        shared_budget.consume(tokens, agent_id=agent_id)
+        if shared_budget.is_agent_exhausted(agent_id):
             agent._budget_exhausted = True
 
     agent.token_callback = _budget_callback

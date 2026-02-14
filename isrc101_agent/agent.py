@@ -172,7 +172,7 @@ class Agent:
                  quiet: bool = False,
                  config=None,
                  iteration_hook: Optional[Callable] = None,
-                 auto_compact_threshold: int = 0):
+                 auto_compact_threshold: int = 85):
         self.llm = llm
         self.tools = tools
         self.max_iterations = max_iterations
