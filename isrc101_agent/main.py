@@ -123,13 +123,19 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
     skill_prompt, _, missing_skills = build_skill_instructions(skills, config.enabled_skills)
     profiler.mark("skills.prompt")
 
-    # 斗地主风格启动界面
-    from .ui.poker import create_poker_table, render_card, render_poker_startup
-    from .ui.cards import TOOL_CARD_MAP, MESSAGE_CARD_MAP, Suit
+    from .theme import SEPARATOR
+    from .ui import (
+        ContextToolbar,
+        MAX_SLASH_MENU_ITEMS,
+        PTK_STYLE,
+        SlashCommandCompleter,
+        make_prompt_html,
+        render_startup,
+    )
 
     profiler.mark("ui.import")
 
-    poker_table = render_poker_startup(console, config)
+    render_startup(console, config)
     if missing_skills:
         console.print(f"  [#E3B341]⚠ Missing skills in config:[/#E3B341] {', '.join(missing_skills)}")
     profiler.mark("startup.render")

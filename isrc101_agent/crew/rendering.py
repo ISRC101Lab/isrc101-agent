@@ -339,8 +339,8 @@ class CrewRenderer:
                 return f"{n / 1_000:.0f}k"
             return str(n)
 
-        budget_str = f"  Budget: {_fmt_tokens(budget_used)}/{_fmt_tokens(budget_max)} ({budget_pct}%)"
-        if budget_pct >= 80:
+        budget_str = f"  Budget: {_fmt_tokens(budget_used)}/{_fmt_tokens(budget_max)} ({budget_pct}%)" if budget_max > 0 else f"  Budget: {_fmt_tokens(budget_used)} (unlimited)"
+        if budget_max > 0 and budget_pct >= 80:
             footer.append(f"  [!]{budget_str}", style=f"bold {THEME_WARN}")
         else:
             footer.append(budget_str, style=THEME_DIM)

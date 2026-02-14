@@ -145,7 +145,7 @@ class Agent:
     MAX_WEB_EVIDENCE_DOCS = 24
     SEARCH_URL_RE = _SEARCH_URL_RE
 
-    def __init__(self, llm: LLMAdapter, tools: ToolRegistry,
+    def __init__(self, llm: LLMAdapter, tools: ToolRegistry, max_iterations: int = 30,
                  auto_confirm: bool = False, chat_mode: str = "agent",
                  auto_commit: bool = True,
                  skill_instructions: Optional[str] = None,
@@ -175,6 +175,7 @@ class Agent:
                  auto_compact_threshold: int = 85):
         self.llm = llm
         self.tools = tools
+        self.max_iterations = max_iterations
         self.auto_confirm = auto_confirm
         self.auto_commit = auto_commit
         self.skill_instructions = skill_instructions
@@ -506,12 +507,7 @@ class Agent:
             if self.auto_compact_threshold > 0 and len(self.conversation) > 6:
                 ctx_info = self.get_context_info()
                 if ctx_info["pct"] >= self.auto_compact_threshold:
-                    compacted = self.compact_conversation()
-                    if compacted > 0:
-                        _log.info(
-                            "Auto-compacted %d messages (context was %d%%)",
-                            compacted, ctx_info["pct"],
-                        )
+                    self._auto_compact_with_progress(ctx_info)
 
             system = self._compose_system_prompt(base_system, grounding_feedback)
             messages = self._prepare_messages(system)
@@ -940,6 +936,46 @@ class Agent:
             "web_display": self.web_display,
             "answer_style": self.answer_style,
         }
+
+    def _auto_compact_with_progress(self, ctx_info: dict) -> None:
+        """Auto-compact with visible progress feedback so users don't think it's frozen."""
+        pct = ctx_info["pct"]
+        msgs = ctx_info["messages"]
+        conv_tokens = ctx_info["conv_tokens"]
+
+        self._print()
+        self._print(
+            f"  [{_T_WARN}]⚠ Context {pct}% full "
+            f"({conv_tokens:,} tokens, {msgs} messages) — auto-compacting...[/{_T_WARN}]"
+        )
+
+        t0 = time.monotonic()
+        if not self.quiet:
+            with Status(
+                f"  [{_T_DIM}]Summarizing conversation history via LLM...[/{_T_DIM}]",
+                console=console,
+                spinner="dots",
+                spinner_style=_T_ACCENT,
+            ):
+                compacted = self.compact_conversation()
+        else:
+            compacted = self.compact_conversation()
+
+        elapsed = time.monotonic() - t0
+
+        if compacted > 0:
+            after = self.get_context_info()
+            saved = conv_tokens - after["conv_tokens"]
+            self._print(
+                f"  [{_T_SUCCESS}]✓ Compacted {compacted} messages "
+                f"(freed ~{saved:,} tokens, {elapsed:.1f}s) "
+                f"— context now {after['pct']}%[/{_T_SUCCESS}]"
+            )
+        else:
+            self._print(
+                f"  [{_T_DIM}]Compaction skipped (not enough messages to compress)[/{_T_DIM}]"
+            )
+        self._print()
 
     def compact_conversation(self) -> int:
         """Compact old messages into an LLM-generated summary, keeping recent suffix.

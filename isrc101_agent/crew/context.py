@@ -33,12 +33,21 @@ class SharedTokenBudget:
         self._warned_thresholds: Dict[str, Set[int]] = {}  # agent_id -> warned %s
         self._lock = threading.Lock()
 
+    @property
+    def unlimited(self) -> bool:
+        """Whether budget enforcement is disabled (max_tokens=0 or per_agent_limit=0)."""
+        return self.max_tokens <= 0 or self.per_agent_limit <= 0
+
     def register_agent(self, agent_id: str, role_name: str) -> int:
         """Compute and store per-agent limit using role multiplier.
 
-        Returns the computed limit for the agent.
+        Returns the computed limit for the agent (0 = unlimited).
         """
         with self._lock:
+            if self.per_agent_limit <= 0:
+                self._agent_limits[agent_id] = 0
+                self._warned_thresholds[agent_id] = set()
+                return 0
             multiplier = self.role_multipliers.get(role_name, 1.0)
             limit = int(self.per_agent_limit * multiplier)
             self._agent_limits[agent_id] = limit
@@ -59,6 +68,8 @@ class SharedTokenBudget:
     @property
     def remaining(self) -> int:
         with self._lock:
+            if self.max_tokens <= 0:
+                return 999_999_999
             return max(0, self.max_tokens - self._used)
 
     @property
@@ -68,14 +79,18 @@ class SharedTokenBudget:
 
     def is_exhausted(self) -> bool:
         with self._lock:
+            if self.max_tokens <= 0:
+                return False
             return self._used >= self.max_tokens
 
     def is_agent_exhausted(self, agent_id: str) -> bool:
         """Check if a specific agent has hit its per-agent limit or the global ceiling."""
         with self._lock:
-            if self._used >= self.max_tokens:
+            if self.max_tokens > 0 and self._used >= self.max_tokens:
                 return True
             limit = self._agent_limits.get(agent_id, self.per_agent_limit)
+            if limit <= 0:
+                return False
             return self._agent_usage.get(agent_id, 0) >= limit
 
     def agent_used(self, agent_id: str) -> int:
@@ -84,11 +99,9 @@ class SharedTokenBudget:
             return self._agent_usage.get(agent_id, 0)
 
     def check_warnings(self, agent_id: str, thresholds: List[int]) -> Optional[int]:
-        """Return threshold percentage if a new threshold was crossed, else None.
-
-        Example: thresholds=[50, 75, 90] — returns 50 the first time agent
-        crosses 50% of its budget, 75 for 75%, etc.
-        """
+        """Return threshold percentage if a new threshold was crossed, else None."""
+        if not thresholds:
+            return None
         with self._lock:
             limit = self._agent_limits.get(agent_id, self.per_agent_limit)
             if limit <= 0:

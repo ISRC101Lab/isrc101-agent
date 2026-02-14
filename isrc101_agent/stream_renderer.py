@@ -156,6 +156,12 @@ def render_stream(
     try:
         for event_type, data in event_iterator:
             if event_type == "text":
+                # Strip leading newlines from first text chunk after reasoning
+                # to prevent blank gap between thinking spinner and response
+                if not accumulated_text and accumulated_reasoning and data:
+                    data = data.lstrip("\n")
+                    if not data:
+                        continue
                 accumulated_text += data
                 _stop_thinking()
                 _flush_reasoning_buffer()

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import List, Sequence, Tuple
 
 from prompt_toolkit.completion import Completion, Completer
 from prompt_toolkit.formatted_text import HTML
@@ -43,17 +43,15 @@ PTK_STYLE = Style.from_dict({
     # ── Scrollbar ──
     "scrollbar.background": "bg:default",
     "scrollbar.button":     "bg:default #484F58",
-    # ── Bottom toolbar (context info bar) ──
-    "bottom-toolbar":       "bg:default #6E7681",
-    "bottom-toolbar.text":  "bg:default #6E7681",
-    # ── Toolbar semantic tokens ──
-    "ctx-label":   "#484F58",
-    "ctx-value":   "#8B949E",
-    "ctx-ok":      "#57DB9C",
-    "ctx-warn":    "#E3B341",
-    "ctx-danger":  "#F85149",
-    "ctx-accent":  "#7FA6D9",
-    "ctx-dim":     "#484F58",
+    # ── Bottom toolbar (context info) ──
+    "bottom-toolbar":       "bg:#1A1D23 #6E7681",
+    "ctx-dim":              "#484F58",
+    "ctx-label":            "#6E7681",
+    "ctx-value":            "#C8D8EE",
+    "ctx-accent":           "#7FA6D9 bold",
+    "ctx-ok":               "#57DB9C",
+    "ctx-warn":             "#E3B341",
+    "ctx-danger":           "#F85149 bold",
 })
 
 
@@ -75,11 +73,8 @@ SLASH_COMMAND_SPECS: tuple[SlashCommandSpec, ...] = (
     SlashCommandSpec("/grounding", "/grounding",   "Control strict grounded web-answer validation", ("citations", "evidence", "hallucination")),
     SlashCommandSpec("/display",  "/display",     "Configure thinking display, answer style, and tool output", ("thinking", "summary", "verbose", "concise", "tools", "parallel")),
     SlashCommandSpec("/theme",    "/theme",       "Switch between light and dark color themes", ("color", "appearance", "dark", "light")),
-    SlashCommandSpec("/sessions", "/sessions",
-                     "Browse and restore saved sessions (↑↓ select, Enter load)",
-                     ("session", "history", "save", "load", "restore")),
-    SlashCommandSpec("/compact",  "/compact",     "Compress conversation history to free context space", ("context", "tokens", "compress")),
-    SlashCommandSpec("/context",  "/context",     "Show context window usage and token budget", ("tokens", "usage", "window")),
+    SlashCommandSpec("/sessions", "/sessions",    "Browse and load saved sessions", ("session", "history", "save", "load")),
+    SlashCommandSpec("/compact",  "/compact",     "Summarize conversation history to free up context", ("context", "tokens")),
     SlashCommandSpec("/undo",     "/undo",        "Revert the last file change made by the agent", ("revert", "rollback")),
     SlashCommandSpec("/diff",     "/diff",        "Show uncommitted changes as a unified diff", ("git", "changes", "patch")),
     SlashCommandSpec("/config",   "/config [key|set|reset|diff]", "Manage configuration settings interactively", ("settings", "preferences", "customize")),
@@ -91,6 +86,95 @@ SLASH_COMMAND_SPECS: tuple[SlashCommandSpec, ...] = (
 
 SLASH_COMMANDS = [spec.command for spec in SLASH_COMMAND_SPECS]
 MAX_SLASH_MENU_ITEMS = 18
+
+
+def _fmt_tokens(n: int) -> str:
+    """Format token count: 1234 → '1.2k', 123456 → '123k'."""
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.0f}k" if n >= 10_000 else f"{n / 1_000:.1f}k"
+    return str(n)
+
+
+class ContextToolbar:
+    """Callable that builds the bottom toolbar showing context info.
+
+    Designed to be passed as ``bottom_toolbar`` to prompt_toolkit's
+    PromptSession.  Queries the agent for live context data on each
+    render tick so the bar stays current.
+    """
+
+    def __init__(self, agent_ref: Callable, config_ref: Callable):
+        self._agent_ref = agent_ref
+        self._config_ref = config_ref
+        self._last_parts: list = []
+
+    def __call__(self) -> list:
+        try:
+            self._last_parts = self._build()
+        except Exception:
+            if not self._last_parts:
+                self._last_parts = self._build_fallback()
+        return self._last_parts
+
+    def _build_fallback(self) -> list:
+        try:
+            config = self._config_ref()
+            model_name = config.active_model or "?"
+            mode = getattr(config, "chat_mode", "?")
+        except Exception:
+            return [("class:ctx-dim", " ready ")]
+        return [
+            ("class:ctx-dim", " "),
+            ("class:ctx-label", " model:"),
+            ("class:ctx-accent", f"{model_name} "),
+            ("class:ctx-label", " mode:"),
+            ("class:ctx-value", f"{mode} "),
+            ("class:ctx-label", " ctx:"),
+            ("class:ctx-ok", "● 0% "),
+            ("class:ctx-value", "(ready) "),
+        ]
+
+    def _build(self) -> list:
+        agent = self._agent_ref()
+        config = self._config_ref()
+
+        ctx = agent.get_context_info()
+        pct = ctx.get("pct", 0)
+        remaining = ctx.get("remaining", 0)
+        msgs = ctx.get("messages", 0)
+        model_name = config.active_model or "?"
+        mode = agent.mode
+
+        if pct >= 90:
+            pct_class = "class:ctx-danger"
+            pct_icon = "!"
+        elif pct >= 70:
+            pct_class = "class:ctx-warn"
+            pct_icon = get_icon("●")
+        else:
+            pct_class = "class:ctx-ok"
+            pct_icon = get_icon("●")
+
+        parts: list = []
+        parts.append(("class:ctx-dim", " "))
+        parts.append(("class:ctx-label", " model:"))
+        parts.append(("class:ctx-accent", f"{model_name} "))
+        parts.append(("class:ctx-label", " mode:"))
+        parts.append(("class:ctx-value", f"{mode} "))
+        parts.append(("class:ctx-label", " msgs:"))
+        parts.append(("class:ctx-value", f"{msgs} "))
+        parts.append(("class:ctx-label", " ctx:"))
+        parts.append((pct_class, f"{pct_icon} {pct}% "))
+        parts.append(("class:ctx-value", f"({_fmt_tokens(remaining)} left) "))
+
+        total_tok = getattr(agent, "total_tokens", 0)
+        if total_tok > 0:
+            parts.append(("class:ctx-label", " tok:"))
+            parts.append(("class:ctx-value", f"{_fmt_tokens(total_tok)} "))
+
+        return parts
 
 
 def build_banner(version: str) -> str:
@@ -151,117 +235,8 @@ HELP_TEXT = ""
 
 
 def make_prompt_html(mode: str = "agent") -> HTML:
-    """Styled input prompt with mode indicator."""
-    icon = get_icon("❯")
-    return HTML(f'<style fg="{THEME_PROMPT}">{icon}</style> ')
-
-
-def _fmt_tokens(n: int) -> str:
-    """Format token counts: 1234567 -> '1.2M', 12345 -> '12k', 999 -> '999'."""
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:.1f}M"
-    if n >= 1_000:
-        return f"{n / 1_000:.0f}k"
-    return str(n)
-
-
-class ContextToolbar:
-    """Callable that builds the bottom toolbar showing context info.
-
-    Designed to be passed as ``bottom_toolbar`` to prompt_toolkit's
-    PromptSession. It queries the agent for live context data on each
-    render tick so the bar stays current.
-    """
-
-    def __init__(self, agent_ref: Callable, config_ref: Callable):
-        """
-        Args:
-            agent_ref: callable returning the Agent instance
-            config_ref: callable returning the Config instance
-        """
-        self._agent_ref = agent_ref
-        self._config_ref = config_ref
-        self._last_parts: list = []
-
-    def __call__(self) -> list:
-        """Return prompt_toolkit formatted text tuples for the toolbar."""
-        try:
-            self._last_parts = self._build()
-        except Exception:
-            # On error, show static fallback with config info only
-            if not self._last_parts:
-                self._last_parts = self._build_fallback()
-        return self._last_parts
-
-    def _build_fallback(self) -> list:
-        """Minimal toolbar when agent context is not yet available."""
-        try:
-            config = self._config_ref()
-            model_name = config.active_model or "?"
-            mode = getattr(config, "chat_mode", "?")
-        except Exception:
-            return [("class:ctx-dim", " ready ")]
-        return [
-            ("class:ctx-dim", " "),
-            ("class:ctx-label", " model:"),
-            ("class:ctx-accent", f"{model_name} "),
-            ("class:ctx-label", " mode:"),
-            ("class:ctx-value", f"{mode} "),
-            ("class:ctx-label", " ctx:"),
-            ("class:ctx-ok", "● 0% "),
-            ("class:ctx-value", "(ready) "),
-        ]
-
-    def _build(self) -> list:
-        agent = self._agent_ref()
-        config = self._config_ref()
-
-        # Gather context info
-        ctx = agent.get_context_info()
-        pct = ctx.get("pct", 0)
-        remaining = ctx.get("remaining", 0)
-        msgs = ctx.get("messages", 0)
-        model_name = config.active_model or "?"
-        mode = agent.mode
-
-        # Context bar color based on usage
-        if pct >= 90:
-            pct_class = "class:ctx-danger"
-            pct_icon = get_icon("!")
-        elif pct >= 70:
-            pct_class = "class:ctx-warn"
-            pct_icon = get_icon("●")
-        else:
-            pct_class = "class:ctx-ok"
-            pct_icon = get_icon("●")
-
-        parts: list = []
-        parts.append(("class:ctx-dim", " "))
-
-        # Model
-        parts.append(("class:ctx-label", " model:"))
-        parts.append(("class:ctx-accent", f"{model_name} "))
-
-        # Mode
-        parts.append(("class:ctx-label", " mode:"))
-        parts.append(("class:ctx-value", f"{mode} "))
-
-        # Messages
-        parts.append(("class:ctx-label", " msgs:"))
-        parts.append(("class:ctx-value", f"{msgs} "))
-
-        # Context usage
-        parts.append(("class:ctx-label", " ctx:"))
-        parts.append((pct_class, f"{pct_icon} {pct}% "))
-        parts.append(("class:ctx-value", f"({_fmt_tokens(remaining)} left) "))
-
-        # Total tokens consumed
-        total_tok = getattr(agent, "total_tokens", 0)
-        if total_tok > 0:
-            parts.append(("class:ctx-label", " tok:"))
-            parts.append(("class:ctx-value", f"{_fmt_tokens(total_tok)} "))
-
-        return parts
+    """Simple prompt like Claude Code: just '>' """
+    return HTML(f'<style fg="{THEME_PROMPT}">></style> ')
 
 
 def render_startup(console, config) -> None:
@@ -593,49 +568,34 @@ def select_model_interactive(config) -> str:
     kb = KeyBindings()
 
     @kb.add("up")
-    def _up(event):
-        if visible[0]:
-            cursor[0] = max(0, cursor[0] - 1)
-        event.app.invalidate()
-
     @kb.add("k")
-    def _up_k(event):
+    def _up(_event):
         if visible[0]:
             cursor[0] = max(0, cursor[0] - 1)
-        event.app.invalidate()
 
     @kb.add("down")
-    def _down(event):
-        if visible[0]:
-            cursor[0] = min(len(visible[0]) - 1, cursor[0] + 1)
-        event.app.invalidate()
-
     @kb.add("j")
-    def _down_j(event):
+    def _down(_event):
         if visible[0]:
             cursor[0] = min(len(visible[0]) - 1, cursor[0] + 1)
-        event.app.invalidate()
 
     @kb.add("backspace")
-    def _backspace(event):
+    def _backspace(_event):
         if query[0]:
             query[0] = query[0][:-1]
             refresh_visible()
-        event.app.invalidate()
 
     @kb.add("c-u")
-    def _clear_query(event):
+    def _clear_query(_event):
         if query[0]:
             query[0] = ""
             refresh_visible()
-        event.app.invalidate()
 
     @kb.add("escape")
     def _escape(event):
         if query[0]:
             query[0] = ""
             refresh_visible()
-            event.app.invalidate()
             return
         result[0] = ""
         event.app.exit()
@@ -662,18 +622,10 @@ def select_model_interactive(config) -> str:
             return
         query[0] += data
         refresh_visible()
-        event.app.invalidate()
 
     control = FormattedTextControl(get_text)
     window = Window(content=control, always_hide_cursor=True)
-    app = Application(
-        layout=Layout(HSplit([window])),
-        key_bindings=kb,
-        full_screen=False,
-        mouse_support=False,
-        refresh_interval=0.5,
-        erase_when_done=True,
-    )
+    app = Application(layout=Layout(HSplit([window])), key_bindings=kb, full_screen=False)
 
     try:
         app.run()
@@ -770,31 +722,19 @@ def select_skills_interactive(config, available_skills: dict) -> list[str]:
     kb = KeyBindings()
 
     @kb.add("up")
-    def _up(event):
-        if visible[0]:
-            cursor[0] = max(0, cursor[0] - 1)
-        event.app.invalidate()
-
     @kb.add("k")
-    def _up_k(event):
+    def _up(_event):
         if visible[0]:
             cursor[0] = max(0, cursor[0] - 1)
-        event.app.invalidate()
 
     @kb.add("down")
-    def _down(event):
-        if visible[0]:
-            cursor[0] = min(len(visible[0]) - 1, cursor[0] + 1)
-        event.app.invalidate()
-
     @kb.add("j")
-    def _down_j(event):
+    def _down(_event):
         if visible[0]:
             cursor[0] = min(len(visible[0]) - 1, cursor[0] + 1)
-        event.app.invalidate()
 
     @kb.add(" ")
-    def _toggle(event):
+    def _toggle(_event):
         name = _current_name()
         if not name:
             return
@@ -802,39 +742,33 @@ def select_skills_interactive(config, available_skills: dict) -> list[str]:
             enabled.remove(name)
         else:
             enabled.add(name)
-        event.app.invalidate()
 
     @kb.add("a")
-    def _all(event):
+    def _all(_event):
         enabled.clear()
         enabled.update(names)
-        event.app.invalidate()
 
     @kb.add("c")
-    def _clear(event):
+    def _clear(_event):
         enabled.clear()
-        event.app.invalidate()
 
     @kb.add("backspace")
-    def _backspace(event):
+    def _backspace(_event):
         if query[0]:
             query[0] = query[0][:-1]
             refresh_visible()
-        event.app.invalidate()
 
     @kb.add("c-u")
-    def _clear_query(event):
+    def _clear_query(_event):
         if query[0]:
             query[0] = ""
             refresh_visible()
-        event.app.invalidate()
 
     @kb.add("escape")
     def _escape(event):
         if query[0]:
             query[0] = ""
             refresh_visible()
-            event.app.invalidate()
             return
         result[0] = None
         event.app.exit()
@@ -858,18 +792,10 @@ def select_skills_interactive(config, available_skills: dict) -> list[str]:
             return
         query[0] += data
         refresh_visible()
-        event.app.invalidate()
 
     control = FormattedTextControl(get_text)
     window = Window(content=control, always_hide_cursor=True)
-    app = Application(
-        layout=Layout(HSplit([window])),
-        key_bindings=kb,
-        full_screen=False,
-        mouse_support=False,
-        refresh_interval=0.5,
-        erase_when_done=True,
-    )
+    app = Application(layout=Layout(HSplit([window])), key_bindings=kb, full_screen=False)
 
     try:
         app.run()
@@ -897,7 +823,6 @@ def select_session_interactive(sessions: list[dict]) -> str:
     visible = [list(range(len(sessions)))]
     cursor = [0]
     result = [""]
-    _app_ref = [None]  # Store app reference for invalidation
 
     def refresh_visible():
         lowered = query[0].strip().lower()
@@ -1042,7 +967,6 @@ def select_session_interactive(sessions: list[dict]) -> str:
         refresh_interval=0.5,
         erase_when_done=True,
     )
-    _app_ref[0] = app
 
     try:
         app.run()
