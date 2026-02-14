@@ -89,6 +89,14 @@ def render_stream(
 
     def _stop_thinking() -> None:
         nonlocal thinking_status
+        _is_tui = getattr(console, '_is_tui', False)
+        if _is_tui:
+            # Clear activity bar thinking indicator (non-blocking)
+            try:
+                console._app.clear_activity()
+            except (RuntimeError, AttributeError):
+                pass
+            return
         if thinking_status is not None:
             thinking_status.stop()
             thinking_status = None
@@ -96,6 +104,24 @@ def render_stream(
     def _update_thinking_display(msg: str, brief: str) -> None:
         """Shared logic for creating/updating the thinking status spinner."""
         nonlocal thinking_notice_shown, thinking_status, last_reasoning_brief, reasoning_start_time
+        _is_tui = getattr(console, '_is_tui', False)
+
+        if _is_tui:
+            # TUI mode: show thinking in activity bar
+            if not thinking_notice_shown:
+                reasoning_start_time = time.perf_counter()
+                thinking_notice_shown = True
+            try:
+                display_msg = brief if brief else msg
+                if len(display_msg) > 60:
+                    display_msg = display_msg[:57] + "..."
+                console._app.set_activity_thinking(display_msg)
+            except Exception:
+                pass
+            last_reasoning_brief = brief
+            return
+
+        # Terminal mode: use Rich Status spinner
         if not thinking_notice_shown or thinking_status is None:
             # Start timing when reasoning begins
             reasoning_start_time = time.perf_counter()

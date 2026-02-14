@@ -1,6 +1,7 @@
-"""Diff utilities for file edit preview."""
+"""Diff utilities for file edit preview and unified diff application."""
 
 import difflib
+import re
 from typing import Optional, Tuple, List
 
 
@@ -157,3 +158,139 @@ def preview_str_replace(
 
     new_content = content.replace(old_str, new_str, 1)
     return generate_unified_diff(content, new_content, filename, context_lines)
+
+
+class DiffApplyError(Exception):
+    """Raised when a unified diff cannot be applied."""
+    pass
+
+
+def apply_unified_diff(content: str, diff_text: str) -> str:
+    """Apply a unified diff to file content, returning the new content.
+
+    Parses standard unified diff format:
+        --- a/file
+        +++ b/file
+        @@ -start,count +start,count @@
+        context / - / + lines
+
+    Raises DiffApplyError if context lines don't match or the diff is malformed.
+    """
+    lines = content.splitlines(keepends=True)
+    # Ensure every line has a newline for consistent matching
+    if lines and not lines[-1].endswith('\n'):
+        lines[-1] += '\n'
+        trailing_newline = False
+    else:
+        trailing_newline = True if lines else True
+
+    hunks = _parse_hunks(diff_text)
+    if not hunks:
+        raise DiffApplyError("No hunks found in diff text.")
+
+    # Apply hunks in reverse order (bottom-to-top) to avoid line-shift issues
+    for hunk in reversed(hunks):
+        lines = _apply_hunk(lines, hunk)
+
+    result = "".join(lines)
+    # Preserve original trailing-newline behavior
+    if not trailing_newline and result.endswith('\n'):
+        result = result[:-1]
+    return result
+
+
+def _parse_hunks(diff_text: str) -> List[dict]:
+    """Parse unified diff text into a list of hunk dicts.
+
+    Each hunk: {
+        'old_start': int,  # 1-indexed start line in original
+        'old_count': int,
+        'new_start': int,
+        'new_count': int,
+        'lines': [(tag, text), ...]  # tag: ' ', '+', '-'
+    }
+    """
+    hunk_header_re = re.compile(
+        r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@'
+    )
+    hunks = []
+    current_hunk = None
+    in_diff = False
+
+    for raw_line in diff_text.splitlines(keepends=True):
+        line = raw_line.rstrip('\n').rstrip('\r')
+
+        # Skip file headers
+        if line.startswith('--- ') or line.startswith('+++ '):
+            in_diff = True
+            continue
+
+        m = hunk_header_re.match(line)
+        if m:
+            in_diff = True
+            if current_hunk is not None:
+                hunks.append(current_hunk)
+            current_hunk = {
+                'old_start': int(m.group(1)),
+                'old_count': int(m.group(2)) if m.group(2) is not None else 1,
+                'new_start': int(m.group(3)),
+                'new_count': int(m.group(4)) if m.group(4) is not None else 1,
+                'lines': [],
+            }
+            continue
+
+        if current_hunk is not None and in_diff:
+            if line.startswith('+'):
+                current_hunk['lines'].append(('+', line[1:]))
+            elif line.startswith('-'):
+                current_hunk['lines'].append(('-', line[1:]))
+            elif line.startswith(' ') or line == '':
+                # Context line (leading space) or empty context line
+                text = line[1:] if line.startswith(' ') else ''
+                current_hunk['lines'].append((' ', text))
+            elif line.startswith('\\'):
+                # "\ No newline at end of file" — skip
+                continue
+
+    if current_hunk is not None:
+        hunks.append(current_hunk)
+
+    return hunks
+
+
+def _apply_hunk(lines: List[str], hunk: dict) -> List[str]:
+    """Apply a single hunk to lines, returning the modified lines list."""
+    old_start = hunk['old_start'] - 1  # convert to 0-indexed
+
+    # Build expected old lines and new replacement lines from the hunk
+    expected_old = []
+    new_lines = []
+    for tag, text in hunk['lines']:
+        text_with_nl = text + '\n' if not text.endswith('\n') else text
+        if tag == ' ':
+            expected_old.append(text_with_nl)
+            new_lines.append(text_with_nl)
+        elif tag == '-':
+            expected_old.append(text_with_nl)
+        elif tag == '+':
+            new_lines.append(text_with_nl)
+
+    # Verify context: expected old lines must match the file content
+    for i, exp in enumerate(expected_old):
+        file_idx = old_start + i
+        if file_idx >= len(lines):
+            raise DiffApplyError(
+                f"Hunk at line {hunk['old_start']}: file has only {len(lines)} lines, "
+                f"but hunk expects content at line {file_idx + 1}."
+            )
+        actual = lines[file_idx]
+        if actual.rstrip('\n') != exp.rstrip('\n'):
+            raise DiffApplyError(
+                f"Hunk at line {hunk['old_start']}: context mismatch at line {file_idx + 1}.\n"
+                f"  Expected: {exp.rstrip()!r}\n"
+                f"  Actual:   {actual.rstrip()!r}"
+            )
+
+    # Replace the old range with new lines
+    lines[old_start:old_start + len(expected_old)] = new_lines
+    return lines

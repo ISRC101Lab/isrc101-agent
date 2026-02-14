@@ -2,12 +2,19 @@
 
 import base64
 import os
+import re
 import subprocess
 from pathlib import Path
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, List
 
-from ..diff_utils import generate_unified_diff, preview_str_replace, count_changes
+from ..diff_utils import generate_unified_diff, preview_str_replace, count_changes, apply_unified_diff, DiffApplyError
 from ..undo import UndoManager
+
+
+def _ensure_newlines(text: str) -> list:
+    """Split text into lines, ensuring each ends with newline."""
+    lines = text.splitlines(keepends=True)
+    return [l if l.endswith('\n') else l + '\n' for l in lines] if lines else ['\n']
 
 
 class FileOperationError(Exception):
@@ -27,6 +34,8 @@ class FileOps:
         self.project_root = Path(project_root).resolve()
         self.undo = UndoManager(project_root)
         self._rg_available: Optional[bool] = None
+        # mtime-keyed cache: path -> (mtime, content) for preview→execute flow
+        self._content_cache: Dict[str, Tuple[float, str]] = {}
 
     def _resolve(self, path: str) -> Path:
         p = Path(path)
@@ -40,6 +49,24 @@ class FileOps:
                 f"Access denied: '{path}' is outside project root ({self.project_root})"
             )
         return p
+
+    def _read_cached(self, fp: Path) -> str:
+        """Read file content, using mtime-keyed cache to avoid redundant reads."""
+        key = str(fp)
+        try:
+            mtime = fp.stat().st_mtime
+        except OSError:
+            raise FileOperationError(f"Cannot stat: {fp}")
+        cached = self._content_cache.get(key)
+        if cached and cached[0] == mtime:
+            return cached[1]
+        content = fp.read_text(encoding="utf-8")
+        self._content_cache[key] = (mtime, content)
+        return content
+
+    def _invalidate_cache(self, fp: Path):
+        """Remove a file from the content cache after writing."""
+        self._content_cache.pop(str(fp), None)
 
     def read_file(self, path: str, start_line: Optional[int] = None,
                   end_line: Optional[int] = None) -> str:
@@ -75,8 +102,8 @@ class FileOps:
         fp = self._resolve(path)
         if fp.exists():
             raise FileOperationError(f"File exists: {path}. Use str_replace or write_file.")
-        # Backup before creation (content=None means file didn't exist)
-        self.undo.backup_file(path, "create_file", {"path": path})
+        # File doesn't exist yet — pass content=None to skip disk read
+        self.undo.backup_file(path, "create_file", {"path": path}, content=None)
         fp.parent.mkdir(parents=True, exist_ok=True)
         fp.write_text(content, encoding="utf-8")
         return f"Created {path} ({len(content.splitlines())} lines)"
@@ -84,10 +111,17 @@ class FileOps:
     def write_file(self, path: str, content: str) -> str:
         fp = self._resolve(path)
         existed = fp.exists()
-        # Backup before write
-        self.undo.backup_file(path, "write_file", {"path": path})
+        # Read existing content once (or None if new file), pass to backup
+        old_content = None
+        if existed and fp.is_file():
+            try:
+                old_content = self._read_cached(fp)
+            except (UnicodeDecodeError, FileOperationError):
+                old_content = None
+        self.undo.backup_file(path, "write_file", {"path": path}, content=old_content)
         fp.parent.mkdir(parents=True, exist_ok=True)
         fp.write_text(content, encoding="utf-8")
+        self._invalidate_cache(fp)
         verb = "Overwrote" if existed else "Created"
         return f"{verb} {path} ({len(content.splitlines())} lines)"
 
@@ -95,10 +129,13 @@ class FileOps:
         fp = self._resolve(path)
         if not fp.exists():
             raise FileOperationError(f"File not found: {path}. Use create_file first.")
-        self.undo.backup_file(path, "append_file", {"path": path})
-        existing = fp.read_text(encoding="utf-8")
-        fp.write_text(existing + content, encoding="utf-8")
-        total_lines = len((existing + content).splitlines())
+        existing = self._read_cached(fp)
+        # Pass already-read content to avoid re-reading in backup
+        self.undo.backup_file(path, "append_file", {"path": path}, content=existing)
+        combined = existing + content
+        fp.write_text(combined, encoding="utf-8")
+        self._invalidate_cache(fp)
+        total_lines = len(combined.splitlines())
         appended_lines = len(content.splitlines())
         return f"Appended {appended_lines} lines to {path} (now {total_lines} lines)"
 
@@ -106,7 +143,7 @@ class FileOps:
         fp = self._resolve(path)
         if not fp.exists():
             raise FileOperationError(f"File not found: {path}")
-        content = fp.read_text(encoding="utf-8")
+        content = self._read_cached(fp)
         count = content.count(old_str)
         if count == 0:
             lines = content.splitlines()
@@ -118,10 +155,11 @@ class FileOps:
             raise FileOperationError(
                 f"String appears {count}x in {path}. Add context to make unique."
             )
-        # Backup before edit
-        self.undo.backup_file(path, "str_replace", {"path": path})
+        # Pass already-read content to avoid re-reading in backup
+        self.undo.backup_file(path, "str_replace", {"path": path}, content=content)
         new_content = content.replace(old_str, new_str, 1)
         fp.write_text(new_content, encoding="utf-8")
+        self._invalidate_cache(fp)
         return f"Edited {path}"
 
     def preview_str_replace(self, path: str, old_str: str, new_str: str) -> Tuple[bool, str]:
@@ -130,7 +168,7 @@ class FileOps:
         if not fp.exists():
             return False, f"File not found: {path}"
 
-        content = fp.read_text(encoding="utf-8")
+        content = self._read_cached(fp)
         count = content.count(old_str)
 
         if count == 0:
@@ -151,10 +189,226 @@ class FileOps:
             lines = len(content.splitlines())
             return False, f"New file: {rel_path} ({lines} lines)"
 
-        old_content = fp.read_text(encoding="utf-8")
+        old_content = self._read_cached(fp)
         diff = generate_unified_diff(old_content, content, rel_path)
         added, removed, _ = count_changes(old_content, content)
         return True, diff
+
+    # ── Batch / advanced edit tools ──────────────────
+
+    def multi_edit(self, path: str, edits: List[Dict[str, str]]) -> str:
+        """Apply multiple str_replace-style edits atomically in a single call.
+
+        Each edit is {old_str: str, new_str: str}. All old_str values must
+        appear exactly once. If any validation fails, no edits are applied.
+        """
+        fp = self._resolve(path)
+        if not fp.exists():
+            raise FileOperationError(f"File not found: {path}")
+        if not edits:
+            raise FileOperationError("No edits provided.")
+
+        content = self._read_cached(fp)
+
+        # Phase 1: validate ALL edits against original content
+        errors = []
+        for i, edit in enumerate(edits):
+            old_str = edit.get("old_str")
+            if old_str is None:
+                errors.append(f"Edit {i + 1}: missing 'old_str'")
+                continue
+            if "new_str" not in edit:
+                errors.append(f"Edit {i + 1}: missing 'new_str'")
+                continue
+            count = content.count(old_str)
+            if count == 0:
+                errors.append(f"Edit {i + 1}: old_str not found in {path}")
+            elif count > 1:
+                errors.append(f"Edit {i + 1}: old_str appears {count}x in {path} (must be unique)")
+
+        if errors:
+            raise FileOperationError(
+                f"multi_edit validation failed ({len(errors)} error(s)):\n"
+                + "\n".join(f"  - {e}" for e in errors)
+            )
+
+        # Phase 2: apply edits sequentially (content updated after each)
+        self.undo.backup_file(path, "multi_edit", {"path": path, "count": len(edits)}, content=content)
+        for edit in edits:
+            content = content.replace(edit["old_str"], edit["new_str"], 1)
+
+        fp.write_text(content, encoding="utf-8")
+        self._invalidate_cache(fp)
+        return f"Edited {path}: {len(edits)} replacements applied"
+
+    def edit_file_lines(self, path: str, operations: List[Dict]) -> str:
+        """Edit file by line numbers: insert, replace, or delete lines.
+
+        Operations: [{type: "insert"|"replace"|"delete", line: int,
+                      end_line?: int, content?: str}, ...]
+        Applied bottom-to-top to prevent line-shift issues.
+        """
+        fp = self._resolve(path)
+        if not fp.exists():
+            raise FileOperationError(f"File not found: {path}")
+        if not operations:
+            raise FileOperationError("No operations provided.")
+
+        content = self._read_cached(fp)
+        lines = content.splitlines(keepends=True)
+        # Ensure last line has newline for consistency
+        if lines and not lines[-1].endswith('\n'):
+            lines[-1] += '\n'
+        total = len(lines)
+
+        # Validate all operations
+        valid_types = {"insert", "replace", "delete"}
+        errors = []
+        for i, op in enumerate(operations):
+            op_type = op.get("type")
+            if op_type not in valid_types:
+                errors.append(f"Op {i + 1}: invalid type '{op_type}' (must be insert/replace/delete)")
+                continue
+            line_num = op.get("line")
+            if not isinstance(line_num, int) or line_num < 1:
+                errors.append(f"Op {i + 1}: 'line' must be a positive integer")
+                continue
+            if op_type == "insert":
+                # insert allows line up to total+1 (append at end)
+                if line_num > total + 1:
+                    errors.append(f"Op {i + 1}: line {line_num} out of range (file has {total} lines)")
+                if "content" not in op:
+                    errors.append(f"Op {i + 1}: insert requires 'content'")
+            elif op_type == "replace":
+                end_line = op.get("end_line", line_num)
+                if not isinstance(end_line, int) or end_line < line_num:
+                    errors.append(f"Op {i + 1}: end_line must be >= line")
+                elif end_line > total:
+                    errors.append(f"Op {i + 1}: end_line {end_line} out of range (file has {total} lines)")
+                if "content" not in op:
+                    errors.append(f"Op {i + 1}: replace requires 'content'")
+            elif op_type == "delete":
+                end_line = op.get("end_line", line_num)
+                if not isinstance(end_line, int) or end_line < line_num:
+                    errors.append(f"Op {i + 1}: end_line must be >= line")
+                elif end_line > total:
+                    errors.append(f"Op {i + 1}: end_line {end_line} out of range (file has {total} lines)")
+
+        if errors:
+            raise FileOperationError(
+                f"edit_file_lines validation failed ({len(errors)} error(s)):\n"
+                + "\n".join(f"  - {e}" for e in errors)
+            )
+
+        # Sort operations by line number descending (bottom-to-top)
+        sorted_ops = sorted(operations, key=lambda op: op.get("end_line", op["line"]), reverse=True)
+
+        self.undo.backup_file(path, "edit_file_lines", {"path": path}, content=content)
+
+        added = 0
+        removed = 0
+        for op in sorted_ops:
+            op_type = op["type"]
+            line_idx = op["line"] - 1  # 0-indexed
+
+            if op_type == "insert":
+                new_lines = _ensure_newlines(op["content"])
+                lines[line_idx:line_idx] = new_lines
+                added += len(new_lines)
+
+            elif op_type == "replace":
+                end_idx = op.get("end_line", op["line"])  # 1-indexed inclusive
+                new_lines = _ensure_newlines(op["content"])
+                old_count = end_idx - line_idx
+                lines[line_idx:end_idx] = new_lines
+                removed += old_count
+                added += len(new_lines)
+
+            elif op_type == "delete":
+                end_idx = op.get("end_line", op["line"])  # 1-indexed inclusive
+                old_count = end_idx - line_idx
+                del lines[line_idx:end_idx]
+                removed += old_count
+
+        new_content = "".join(lines)
+        # Preserve no-trailing-newline if original didn't have one
+        if not content.endswith('\n') and new_content.endswith('\n'):
+            new_content = new_content[:-1]
+        fp.write_text(new_content, encoding="utf-8")
+        self._invalidate_cache(fp)
+        return f"Edited {path}: {len(operations)} operation(s), +{added}/-{removed} lines"
+
+    def regex_replace(self, path: str, pattern: str, replacement: str,
+                      count: int = 0, flags: str = "") -> str:
+        """Regex search-and-replace across a file.
+
+        Args:
+            pattern: Python regex pattern.
+            replacement: Replacement string (supports \\1, \\2 groups).
+            count: Max replacements (0 = all).
+            flags: "i" for case-insensitive, "m" for multiline, "s" for dotall.
+        """
+        fp = self._resolve(path)
+        if not fp.exists():
+            raise FileOperationError(f"File not found: {path}")
+
+        re_flags = 0
+        for ch in flags:
+            if ch == "i":
+                re_flags |= re.IGNORECASE
+            elif ch == "m":
+                re_flags |= re.MULTILINE
+            elif ch == "s":
+                re_flags |= re.DOTALL
+            else:
+                raise FileOperationError(f"Unknown regex flag: '{ch}' (use i/m/s)")
+
+        try:
+            compiled = re.compile(pattern, re_flags)
+        except re.error as e:
+            raise FileOperationError(f"Invalid regex pattern: {e}")
+
+        content = self._read_cached(fp)
+
+        # Count matches first
+        matches = compiled.findall(content)
+        if not matches:
+            raise FileOperationError(f"Pattern '{pattern}' not found in {path}")
+
+        match_count = len(matches)
+        self.undo.backup_file(path, "regex_replace", {"path": path, "pattern": pattern}, content=content)
+
+        new_content, n_subs = compiled.subn(replacement, content, count=count)
+        fp.write_text(new_content, encoding="utf-8")
+        self._invalidate_cache(fp)
+        return f"Edited {path}: {n_subs} replacement(s) made (of {match_count} match(es))"
+
+    def apply_diff(self, path: str, diff: str) -> str:
+        """Apply a unified diff to a file.
+
+        The diff should be in standard unified diff format with @@ hunk headers.
+        Context lines are verified against the file to catch stale diffs.
+        """
+        fp = self._resolve(path)
+        if not fp.exists():
+            raise FileOperationError(f"File not found: {path}")
+
+        content = self._read_cached(fp)
+
+        try:
+            new_content = apply_unified_diff(content, diff)
+        except DiffApplyError as e:
+            raise FileOperationError(f"Failed to apply diff to {path}: {e}")
+
+        self.undo.backup_file(path, "apply_diff", {"path": path}, content=content)
+        fp.write_text(new_content, encoding="utf-8")
+        self._invalidate_cache(fp)
+
+        old_lines = len(content.splitlines())
+        new_lines = len(new_content.splitlines())
+        delta = new_lines - old_lines
+        sign = "+" if delta >= 0 else ""
+        return f"Edited {path}: diff applied ({sign}{delta} lines, now {new_lines} lines)"
 
     def delete_file(self, path: str) -> str:
         fp = self._resolve(path)
@@ -162,9 +416,15 @@ class FileOps:
             raise FileOperationError(f"Not found: {path}")
         if fp.is_dir():
             raise FileOperationError(f"Is a directory: {path}")
-        # Backup before delete
-        self.undo.backup_file(path, "delete_file", {"path": path})
+        # Read content once for backup, then delete
+        old_content = None
+        try:
+            old_content = self._read_cached(fp)
+        except (UnicodeDecodeError, FileOperationError):
+            pass
+        self.undo.backup_file(path, "delete_file", {"path": path}, content=old_content)
         fp.unlink()
+        self._invalidate_cache(fp)
         return f"Deleted {path}"
 
     def list_directory(self, path: str = ".", max_depth: int = 3) -> str:

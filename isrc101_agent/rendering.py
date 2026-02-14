@@ -361,6 +361,13 @@ def render_tool_call(console: Console, name, args, index=None, total=None):
 
     console.print(f"\n  {progress}[{ACCENT}]{icon}[/{ACCENT}] [bold {TEXT}]{name}[/bold {TEXT}] [{DIM}]{detail}[/{DIM}]")
 
+    # TUI mode: update activity bar with current tool
+    if getattr(console, '_is_tui', False):
+        try:
+            console._app.set_activity_tool(name, detail)
+        except Exception:
+            pass
+
 
 def render_result(console: Console, name, result, elapsed: float = 0,
                   web_display: str = "summary", format_preview_fn=None,

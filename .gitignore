@@ -1,4 +1,5 @@
 .venv/
+venv/
 __pycache__/
 *.pyc
 *.egg-info/
@@ -9,3 +10,6 @@ build/
 
 # isrc101-agent undo history
 .isrc101-undo/
+
+# web_doudizhu virtualenv
+web_doudizhu/venv/

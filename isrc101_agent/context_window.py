@@ -207,7 +207,8 @@ class ContextWindowManager:
                 + result[-half:])
 
     def prepare_messages(self, conversation: list, system_prompt: str, console,
-                         tool_schemas: Optional[list] = None) -> list:
+                         tool_schemas: Optional[list] = None,
+                         on_trimmed=None) -> list:
         system_msg = {"role": "system", "content": system_prompt}
 
         # Tool schemas consume context window tokens
@@ -255,8 +256,11 @@ class ContextWindowManager:
 
         trimmed = len(conversation) - len(kept)
         if trimmed > 0:
-            console.print(
-                f"  [#6E7681]⚠ Trimmed {trimmed} old messages to fit context window "
-                f"({self.context_window:,} tokens)[/#6E7681]")
+            if on_trimmed:
+                on_trimmed(trimmed, self.context_window)
+            else:
+                console.print(
+                    f"  [#6E7681]⚠ Trimmed {trimmed} old messages to fit context window "
+                    f"({self.context_window:,} tokens)[/#6E7681]")
 
         return [system_msg] + kept

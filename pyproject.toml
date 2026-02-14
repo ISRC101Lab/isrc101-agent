@@ -18,10 +18,12 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "tiktoken>=0.5.0",
     "requests>=2.31.0",
+    "textual>=0.80.0",
+    "pyperclip>=1.8.0",
 ]
 
 [project.scripts]
 isrc = "isrc101_agent.main:cli"
 
 [tool.setuptools]
-packages = ["isrc101_agent", "isrc101_agent.crew", "isrc101_agent.tools", "isrc101_agent.formatters", "isrc101_agent.themes"]
+packages = ["isrc101_agent", "isrc101_agent.crew", "isrc101_agent.tools", "isrc101_agent.formatters", "isrc101_agent.themes", "isrc101_agent.tui"]

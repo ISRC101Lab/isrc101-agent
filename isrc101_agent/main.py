@@ -53,7 +53,8 @@ def cli(ctx):
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
 @click.option("--no-unicode", is_flag=True, help="Use ASCII icons instead of Unicode")
 @click.option("--high-contrast", is_flag=True, help="Use high contrast theme")
-def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbose, no_unicode, high_contrast):
+@click.option("--no-tui", is_flag=True, help="Use legacy prompt_toolkit REPL instead of TUI")
+def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbose, no_unicode, high_contrast, no_tui):
     """Start an interactive session."""
     profiler = StartupProfiler.from_env()
 
@@ -123,23 +124,6 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
     skill_prompt, _, missing_skills = build_skill_instructions(skills, config.enabled_skills)
     profiler.mark("skills.prompt")
 
-    from .theme import SEPARATOR
-    from .ui import (
-        ContextToolbar,
-        MAX_SLASH_MENU_ITEMS,
-        PTK_STYLE,
-        SlashCommandCompleter,
-        make_prompt_html,
-        render_startup,
-    )
-
-    profiler.mark("ui.import")
-
-    render_startup(console, config)
-    if missing_skills:
-        console.print(f"  [#E3B341]⚠ Missing skills in config:[/#E3B341] {', '.join(missing_skills)}")
-    profiler.mark("startup.render")
-
     llm = LLMAdapter(**preset.get_llm_kwargs())
     profiler.mark("llm.init")
 
@@ -186,6 +170,59 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
         config=config,
     )
     profiler.mark("agent.init")
+
+    # Store missing skills info for TUI to display
+    if missing_skills:
+        config._missing_skills_msg = (
+            f"  [#E3B341]⚠ Missing skills in config:[/#E3B341] {', '.join(missing_skills)}"
+        )
+    else:
+        config._missing_skills_msg = ""
+
+    # ── Launch TUI or legacy REPL ──
+    if no_tui:
+        profiler.mark("mode.legacy")
+        _run_legacy_repl(
+            agent=agent,
+            config=config,
+            llm=llm,
+            tools=tools,
+            console=console,
+            profiler=profiler,
+            missing_skills=missing_skills,
+            project_root=project_root,
+        )
+    else:
+        profiler.mark("mode.tui")
+        from .tui.app import ISRCApp
+
+        app = ISRCApp(
+            agent=agent,
+            config=config,
+            llm=llm,
+            tools=tools,
+        )
+        app.run()
+
+
+def _run_legacy_repl(agent, config, llm, tools, console, profiler, missing_skills, project_root):
+    """Legacy prompt_toolkit REPL loop (used with --no-tui flag)."""
+    from .theme import SEPARATOR
+    from .ui import (
+        ContextToolbar,
+        MAX_SLASH_MENU_ITEMS,
+        PTK_STYLE,
+        SlashCommandCompleter,
+        make_prompt_html,
+        render_startup,
+    )
+
+    profiler.mark("ui.import")
+
+    render_startup(console, config)
+    if missing_skills:
+        console.print(f"  [#E3B341]⚠ Missing skills in config:[/#E3B341] {', '.join(missing_skills)}")
+    profiler.mark("startup.render")
 
     from .command_router import handle_command
 
@@ -302,6 +339,12 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
             pass
 
     # ── Auto-save session on exit ──
+    # Flush any pending undo history to disk
+    try:
+        tools.files.undo.flush()
+    except Exception:
+        pass
+
     if agent.conversation:
         # Generate auto-save session name
         import time

@@ -335,64 +335,68 @@ class Coordinator:
         }
 
     def _build_live_display(self):
-        """Build the live progress panel from current board state."""
-        return self.renderer.build_progress_display(
+        """Build the single-line live ticker from current board state."""
+        return self.renderer.build_ticker(
             tasks=self.board.get_all_tasks(),
             states=self._get_task_states(),
             start_times=self._task_start_times,
             budget_used=self.budget.used,
             budget_max=self.budget.max_tokens,
-            per_agent_limit=self.budget.per_agent_limit,
         )
 
     def _event_loop(self):
-        """Main loop: dispatch ready tasks, process messages, show live progress."""
+        """Main loop: dispatch ready tasks, process messages, show live ticker.
+
+        Events are printed as permanent log lines above the ticker.
+        The ticker is a single line that updates in place via Rich Live.
+        """
         self._dispatch_ready_tasks()
 
-        # Use Rich Live for real-time progress dashboard.
-        # Short recv timeout (1.5s) ensures the display refreshes frequently
-        # even when no messages arrive.
         with Live(
             self._build_live_display(),
             console=self.console,
             refresh_per_second=self.crew_cfg.display_refresh_rate,
-            transient=False,  # Keep display stable, prevent ghost frames
-            vertical_overflow="visible",
+            transient=True,
         ) as live:
-            while not self.board.all_resolved():
-                if self.budget.is_exhausted():
-                    self.renderer._log_event(
-                        f"[yellow]Budget exhausted "
-                        f"({self.budget.used:,}/{self.budget.max_tokens:,})[/yellow]"
-                    )
+            # Let renderer print events above the live ticker
+            self.renderer._live_console = live.console
+            try:
+                while not self.board.all_resolved():
+                    if self.budget.is_exhausted():
+                        self.renderer._print(
+                            f"[yellow]Budget exhausted "
+                            f"({self.budget.used:,}/{self.budget.max_tokens:,})[/yellow]"
+                        )
+                        live.update(self._build_live_display())
+                        break
+
+                    # Short timeout for responsive UI updates
+                    msg = self.bus.coordinator_recv(timeout=1.5)
+                    if msg is None:
+                        self._check_task_timeouts()
+                        live.update(self._build_live_display())
+                        continue
+
+                    if msg.type == MessageType.TASK_COMPLETE:
+                        self._on_task_complete(msg)
+                    elif msg.type == MessageType.TASK_FAILED:
+                        self._on_task_failed(msg)
+                    elif msg.type == MessageType.REVIEW_PASSED:
+                        self._on_review_passed(msg)
+                    elif msg.type == MessageType.REWORK_NEEDED:
+                        self._on_rework_needed(msg)
+                    elif msg.type == MessageType.STATUS_UPDATE:
+                        self._on_status_update(msg)
+                    elif msg.type == MessageType.SCRATCHPAD_WRITE:
+                        self._on_scratchpad_write(msg)
+
+                    # Check budget warnings for active agents
+                    self._check_budget_warnings()
+
+                    self._dispatch_ready_tasks()
                     live.update(self._build_live_display())
-                    break
-
-                # Short timeout for responsive UI updates
-                msg = self.bus.coordinator_recv(timeout=1.5)
-                if msg is None:
-                    self._check_task_timeouts()
-                    live.update(self._build_live_display())
-                    continue
-
-                if msg.type == MessageType.TASK_COMPLETE:
-                    self._on_task_complete(msg)
-                elif msg.type == MessageType.TASK_FAILED:
-                    self._on_task_failed(msg)
-                elif msg.type == MessageType.REVIEW_PASSED:
-                    self._on_review_passed(msg)
-                elif msg.type == MessageType.REWORK_NEEDED:
-                    self._on_rework_needed(msg)
-                elif msg.type == MessageType.STATUS_UPDATE:
-                    self._on_status_update(msg)
-                elif msg.type == MessageType.SCRATCHPAD_WRITE:
-                    self._on_scratchpad_write(msg)
-
-                # Check budget warnings for active agents
-                self._check_budget_warnings()
-
-                self._dispatch_ready_tasks()
-                live.update(self._build_live_display())
+            finally:
+                self.renderer._live_console = None
 
     def _dispatch_ready_tasks(self):
         """Assign ready tasks to idle worker instances of the matching role."""

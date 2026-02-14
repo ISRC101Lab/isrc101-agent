@@ -20,8 +20,8 @@ class SharedTokenBudget:
 
     def __init__(
         self,
-        max_tokens: int = 200_000,
-        per_agent_limit: int = 200_000,
+        max_tokens: int = 1_000_000,
+        per_agent_limit: int = 1_000_000,
         role_multipliers: Optional[Dict[str, float]] = None,
     ):
         self.max_tokens = max_tokens

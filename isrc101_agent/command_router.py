@@ -226,6 +226,24 @@ def _cmd_help(ctx: CommandContext, args: list[str]) -> str:
 
 def _cmd_model(ctx: CommandContext, args: list[str]) -> str:
     if not args:
+        # TUI mode: use Textual-native interactive picker
+        if getattr(ctx.console, '_is_tui', False):
+            options = []
+            for model_info in ctx.config.list_models():
+                label = (f"{model_info['name']:<16} {model_info['model']:<24} "
+                         f"{model_info['desc']}")
+                options.append((label, model_info['name']))
+
+            def _on_model_selected(name: str) -> None:
+                if name and name != ctx.config.active_model:
+                    _switch_model(ctx, name)
+                elif name:
+                    ctx.console.print(f"  [{THEME_DIM}]Already on '{name}'[/{THEME_DIM}]")
+
+            ctx.console._app.show_selection(
+                "model", options, ctx.config.active_model, _on_model_selected)
+            return ""
+
         from .ui import select_model_interactive
 
         name = select_model_interactive(ctx.config)
@@ -284,6 +302,32 @@ def _cmd_skills(ctx: CommandContext, args: list[str]) -> str:
     skills = discover_skills(project_root, ctx.config.skills_dir)
 
     if not args:
+        # TUI mode: use Textual-native interactive picker (toggle individual skills)
+        if getattr(ctx.console, '_is_tui', False):
+            if not skills:
+                ctx.console.print(f"  [{THEME_WARN}]No skills found.[/{THEME_WARN}]")
+                return ""
+            options = []
+            for name in sorted(skills.keys()):
+                spec = skills[name]
+                mark = "[ON]" if name in ctx.config.enabled_skills else "[  ]"
+                label = f"{mark} {name:<20} {spec.description[:40]}"
+                options.append((label, name))
+
+            def _on_skill_toggled(name: str) -> None:
+                if name in ctx.config.enabled_skills:
+                    ctx.config.enabled_skills = [s for s in ctx.config.enabled_skills if s != name]
+                    ctx.console.print(f"  [{THEME_SUCCESS}]✓ Skill disabled:[/{THEME_SUCCESS}] {name}")
+                else:
+                    ctx.config.enabled_skills.append(name)
+                    ctx.console.print(f"  [{THEME_SUCCESS}]✓ Skill enabled:[/{THEME_SUCCESS}] {name}")
+                ctx.config.save()
+                _refresh_skill_instructions(ctx, skills)
+
+            ctx.console._app.show_selection(
+                "skills (Enter to toggle)", options, "", _on_skill_toggled)
+            return ""
+
         from .ui import select_skills_interactive
 
         selected = select_skills_interactive(ctx.config, skills)
@@ -361,12 +405,42 @@ def _cmd_mode(ctx: CommandContext, args: list[str]) -> str:
 def _cmd_sessions(ctx: CommandContext, args: list[str]) -> str:
     """Interactive session picker — arrow keys to select, Enter to load."""
     from .session import list_sessions_enhanced, load_session
-    from .ui import select_session_interactive
 
     sessions = list_sessions_enhanced(20)
     if not sessions:
         ctx.console.print(f"  [{THEME_DIM}]No saved sessions[/{THEME_DIM}]")
         return ""
+
+    # TUI mode: use Textual-native interactive picker
+    if getattr(ctx.console, '_is_tui', False):
+        options = []
+        for s in sessions:
+            msgs = s.get("messages", 0)
+            created = s.get("created_at", "")
+            label = f"{s['name']:<20} {msgs:>4} msgs  {created}"
+            options.append((label, s["name"]))
+
+        def _on_session_selected(name: str) -> None:
+            if not name:
+                return
+            data = load_session(name)
+            if data:
+                ctx.agent.conversation = data.get("conversation", [])
+                restored = _restore_session_metadata(ctx, data)
+                ctx.console.print(
+                    f"  [{THEME_SUCCESS}]{get_icon('✓')} Loaded: {data.get('name')} "
+                    f"({len(ctx.agent.conversation)} messages)[/{THEME_SUCCESS}]"
+                )
+                if restored:
+                    ctx.console.print(f"  [{THEME_DIM}]↳ restored {', '.join(restored)}[/{THEME_DIM}]")
+            else:
+                ctx.console.print(f"  [{THEME_WARN}]Session not found: {name}[/{THEME_WARN}]")
+
+        ctx.console._app.show_selection(
+            "sessions", options, "", _on_session_selected)
+        return ""
+
+    from .ui import select_session_interactive
 
     selected = select_session_interactive(sessions)
     if not selected:
@@ -1188,6 +1262,93 @@ def _cmd_theme(ctx: CommandContext, args: list[str]) -> str:
     return ""
 
 
+def _format_message_text(msg: dict) -> str:
+    """Extract human-readable text from a conversation message dict."""
+    role = msg.get("role", "unknown")
+    content = msg.get("content", "")
+    if isinstance(content, list):
+        # Multi-part content (e.g. tool_calls + text)
+        parts = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                parts.append(part.get("text", ""))
+            elif isinstance(part, str):
+                parts.append(part)
+        content = "\n".join(parts)
+    if not isinstance(content, str):
+        content = str(content)
+    label = {"user": "You", "assistant": "Assistant", "system": "System", "tool": "Tool"}.get(role, role)
+    return f"[{label}]\n{content.strip()}"
+
+
+def _cmd_copy(ctx: CommandContext, args: list[str]) -> str:
+    conversation = ctx.agent.conversation
+    if not conversation:
+        ctx.console.print(f"  [{THEME_DIM}]No conversation to copy.[/{THEME_DIM}]")
+        return ""
+
+    # /copy file <path> — export to file
+    if len(args) >= 2 and args[0] == "file":
+        filepath = " ".join(args[1:])
+        lines = [_format_message_text(m) for m in conversation if m.get("role") in ("user", "assistant")]
+        text = "\n\n".join(lines)
+        try:
+            Path(filepath).write_text(text, encoding="utf-8")
+            ctx.console.print(f"  [{THEME_SUCCESS}]✓ Exported {len(lines)} messages to {filepath}[/{THEME_SUCCESS}]")
+        except Exception as exc:
+            ctx.console.print(f"  [{THEME_ERROR}]Write failed: {exc}[/{THEME_ERROR}]")
+        return ""
+
+    # /copy all — all user+assistant messages
+    if args and args[0] == "all":
+        lines = [_format_message_text(m) for m in conversation if m.get("role") in ("user", "assistant")]
+        text = "\n\n".join(lines)
+    elif args and args[0].isdigit():
+        # /copy N — last N messages (user + assistant only)
+        n = int(args[0])
+        relevant = [m for m in conversation if m.get("role") in ("user", "assistant")]
+        lines = [_format_message_text(m) for m in relevant[-n:]]
+        text = "\n\n".join(lines)
+    else:
+        # /copy — last assistant reply
+        for m in reversed(conversation):
+            if m.get("role") == "assistant":
+                content = m.get("content", "")
+                if isinstance(content, list):
+                    parts = []
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            parts.append(part.get("text", ""))
+                        elif isinstance(part, str):
+                            parts.append(part)
+                    text = "\n".join(parts).strip()
+                elif isinstance(content, str):
+                    text = content.strip()
+                else:
+                    text = str(content).strip()
+                break
+        else:
+            ctx.console.print(f"  [{THEME_DIM}]No assistant reply to copy.[/{THEME_DIM}]")
+            return ""
+
+    if not text:
+        ctx.console.print(f"  [{THEME_DIM}]Nothing to copy (empty content).[/{THEME_DIM}]")
+        return ""
+
+    try:
+        import pyperclip
+        pyperclip.copy(text)
+        preview = text[:80].replace("\n", " ")
+        if len(text) > 80:
+            preview += "..."
+        ctx.console.print(f"  [{THEME_SUCCESS}]✓ Copied {len(text)} chars to clipboard[/{THEME_SUCCESS}]")
+        ctx.console.print(f"  [{THEME_DIM}]{preview}[/{THEME_DIM}]")
+    except Exception:
+        ctx.console.print(f"  [{THEME_WARN}]Clipboard unavailable (no display or xclip/xsel).[/{THEME_WARN}]")
+        ctx.console.print(f"  [{THEME_DIM}]Use /copy file <path> to export instead.[/{THEME_DIM}]")
+    return ""
+
+
 COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "/quit": _cmd_quit,
     "/help": _cmd_help,
@@ -1196,6 +1357,7 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "/mode": _cmd_mode,
     "/sessions": _cmd_sessions,
     "/config": _cmd_config,
+    "/copy": _cmd_copy,
     "/stats": _cmd_stats,
     "/compact": _cmd_compact,
     "/context": _cmd_context,

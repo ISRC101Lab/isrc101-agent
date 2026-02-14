@@ -141,6 +141,84 @@ class ToolRegistry:
             mode="code", writes=True,
         )
 
+        # ── Batch / advanced edit tools ──
+        self._tools["multi_edit"] = T(
+            handler=lambda **a: f.multi_edit(a["path"], a["edits"]),
+            schema=S("multi_edit",
+                     "Apply multiple str_replace-style edits to a single file atomically. "
+                     "All edits are validated first; if any fails, none are applied. "
+                     "Each edit is {old_str, new_str} where old_str must appear exactly once.",
+                     {"path": _S("File path to edit"),
+                      "edits": {
+                          "type": "array",
+                          "description": "List of edits: [{old_str: str, new_str: str}, ...]",
+                          "items": {
+                              "type": "object",
+                              "properties": {
+                                  "old_str": {"type": "string", "description": "Exact string to find (must be unique)"},
+                                  "new_str": {"type": "string", "description": "Replacement string"},
+                              },
+                              "required": ["old_str", "new_str"],
+                          },
+                      }},
+                     ["path", "edits"]),
+            mode="code", writes=True,
+        )
+        self._tools["edit_file_lines"] = T(
+            handler=lambda **a: f.edit_file_lines(a["path"], a["operations"]),
+            schema=S("edit_file_lines",
+                     "Edit file by line numbers. Supports insert, replace, and delete "
+                     "operations in a single call. Operations applied bottom-to-top to "
+                     "prevent line-shift issues.",
+                     {"path": _S("File path to edit"),
+                      "operations": {
+                          "type": "array",
+                          "description": "List of operations: [{type, line, end_line?, content?}, ...]",
+                          "items": {
+                              "type": "object",
+                              "properties": {
+                                  "type": {"type": "string", "enum": ["insert", "replace", "delete"],
+                                           "description": "Operation type"},
+                                  "line": {"type": "integer", "description": "Line number (1-indexed)"},
+                                  "end_line": {"type": "integer",
+                                               "description": "End line for replace/delete (inclusive, defaults to line)"},
+                                  "content": {"type": "string",
+                                              "description": "New content (required for insert/replace)"},
+                              },
+                              "required": ["type", "line"],
+                          },
+                      }},
+                     ["path", "operations"]),
+            mode="code", writes=True,
+        )
+        self._tools["apply_diff"] = T(
+            handler=lambda **a: f.apply_diff(a["path"], a["diff"]),
+            schema=S("apply_diff",
+                     "Apply a unified diff to a file. Standard format with @@ hunk headers. "
+                     "Context lines are verified against the file to catch stale diffs. "
+                     "Huge token savings for large file edits — only output changed lines.",
+                     {"path": _S("File path to apply diff to"),
+                      "diff": _S("Unified diff text (--- a/file\\n+++ b/file\\n@@ ... @@\\n...)")},
+                     ["path", "diff"]),
+            mode="code", writes=True,
+        )
+        self._tools["regex_replace"] = T(
+            handler=lambda **a: f.regex_replace(
+                a["path"], a["pattern"], a["replacement"],
+                a.get("count", 0), a.get("flags", "")),
+            schema=S("regex_replace",
+                     "Regex search-and-replace across a file. Supports pattern groups "
+                     "(\\1, \\2) and flags (i=case-insensitive, m=multiline, s=dotall). "
+                     "Errors if no matches found.",
+                     {"path": _S("File path to edit"),
+                      "pattern": _S("Python regex pattern"),
+                      "replacement": _S("Replacement string (supports \\1, \\2 groups)"),
+                      "count": _I("Max replacements (0 = all)", default=0),
+                      "flags": _S("Regex flags: 'i' case-insensitive, 'm' multiline, 's' dotall", default="")},
+                     ["path", "pattern", "replacement"]),
+            mode="code", writes=True,
+        )
+
         # ── Explore tools ──
         self._tools["list_directory"] = T(
             handler=lambda **a: f.list_directory(a.get("path", "."), a.get("max_depth", 3)),
@@ -358,7 +436,8 @@ class ToolRegistry:
         """Return accumulated metrics for all tools."""
         return dict(self._metrics)
 
-    WRITE_TOOLS = {"create_file", "write_file", "append_file", "str_replace", "delete_file"}
+    WRITE_TOOLS = {"create_file", "write_file", "append_file", "str_replace", "delete_file",
+                   "multi_edit", "edit_file_lines", "apply_diff", "regex_replace"}
     CONFIRM_TOOLS = {"bash"}
     PARALLEL_SAFE_TOOLS = {
         "read_file",

@@ -337,53 +337,64 @@ class GroundingState:
         fetched_count = 0
         timed_out = False
         attempted_fetch_urls: set = set()
+        attempted_queries: set = set()
 
         search_hint = error_hint.strip()[:300]
-        attempted_queries: set = set()
-        # Query variations to avoid repeating the same search each round
-        _query_suffixes = ["official docs", "documentation", "reference guide"]
+
+        # State accumulated across rounds for chain-style search
+        discovered_keywords: List[str] = []
+        candidate_url_queue: List[str] = []
+        _static_suffixes = ["official docs", "documentation", "reference guide",
+                            "API reference", "changelog", "tutorial",
+                            "troubleshooting", "examples"]
+
         for round_idx in range(rounds):
             if time.monotonic() >= deadline:
                 timed_out = True
                 break
 
-            query_parts = [user_msg.strip()]
-            if search_hint and round_idx == 0:
-                # Only include error hint in first round; later rounds try cleaner queries
-                query_parts.append(search_hint)
-            suffix = _query_suffixes[round_idx % len(_query_suffixes)]
-            query_parts.append(suffix)
-            query = " ".join(part for part in query_parts if part)
-
-            # Skip if we already tried this exact query
-            if query in attempted_queries:
+            # --- Phase 1/2: build query for this round ---
+            query = self._build_chain_query(
+                round_idx, user_msg, search_hint,
+                discovered_keywords, _static_suffixes, attempted_queries,
+            )
+            if query is None:
                 continue
+
             attempted_queries.add(query)
 
             search_result = safe_search_fn(query, max_results=per_round * 3, domains=use_domains)
             self.capture_search_evidence(search_result)
 
+            # --- Extract leads from this round's results ---
+            new_kw, new_urls = self._extract_leads(search_result, user_msg)
+            for kw in new_kw:
+                if kw not in discovered_keywords:
+                    discovered_keywords.append(kw)
+            for url in new_urls:
+                if url not in attempted_fetch_urls and url not in candidate_url_queue:
+                    candidate_url_queue.append(url)
+
+            # --- Collect direct links from search result ---
             links = extract_search_links(search_result)
             if use_domains:
                 links = [u for u in links if matches_official_domains(u, self.official_domains)]
 
-            candidates: List[str] = []
             for url in links:
-                if url in attempted_fetch_urls:
-                    continue
-                candidates.append(url)
-                if len(candidates) >= per_round:
-                    break
+                if url not in attempted_fetch_urls and url not in candidate_url_queue:
+                    candidate_url_queue.append(url)
 
-            if not candidates and official_only and self.fallback_to_open_web:
+            if not candidate_url_queue and official_only and self.fallback_to_open_web:
                 official_only = False
                 use_domains = None
                 continue
 
-            if not candidates:
-                continue
-
-            for url in candidates:
+            # --- Phase 3: Fetch from candidate queue ---
+            fetch_budget = per_round
+            while candidate_url_queue and fetch_budget > 0:
+                url = candidate_url_queue.pop(0)
+                if url in attempted_fetch_urls:
+                    continue
                 attempted_fetch_urls.add(url)
                 if time.monotonic() >= deadline:
                     timed_out = True
@@ -394,11 +405,102 @@ class GroundingState:
                 after_text = self.evidence_store.get(url, "")
                 if after_text and after_text != before_text:
                     fetched_count += 1
+                fetch_budget -= 1
 
-            if fetched_count > 0:
+            # Don't exit on first success — accumulate until we have enough depth
+            if fetched_count >= per_round * 2:
                 break
 
         return fetched_count, timed_out
+
+    @staticmethod
+    def _extract_leads(search_result: str, user_msg: str) -> Tuple[List[str], List[str]]:
+        """Extract new keywords and candidate URLs from a search result.
+
+        Returns (new_keywords, candidate_urls).
+        - new_keywords: terms appearing >=2 times in snippets but absent from user_msg
+        - candidate_urls: ordered list of URLs found in the result
+        """
+        if not search_result or search_result.startswith(("Web error:", "Error:", "Blocked:")):
+            return [], []
+
+        candidate_urls = extract_search_links(search_result)
+
+        # Count word frequencies in the result snippets
+        user_lower = user_msg.lower()
+        user_words = set(re.findall(r'\b[a-zA-Z][\w.-]{2,}\b', user_lower))
+        # Also include common stop words to filter
+        stop_words = {
+            "the", "and", "for", "with", "from", "this", "that", "have", "are",
+            "was", "were", "will", "been", "being", "has", "had", "does", "did",
+            "but", "not", "you", "all", "can", "her", "his", "its", "our", "out",
+            "too", "use", "how", "may", "new", "one", "two", "see", "way", "who",
+            "get", "got", "let", "say", "she", "why", "try", "ask", "own", "also",
+            "into", "over", "such", "than", "them", "then", "what", "when", "here",
+            "more", "some", "very", "about", "which", "would", "there", "their",
+            "other", "could", "after", "using", "these", "those", "should", "https",
+            "http", "www", "com", "org", "html", "docs", "page", "result",
+            "search", "found", "results", "official", "documentation",
+        }
+
+        word_counts: Dict[str, int] = {}
+        for word in re.findall(r'\b[a-zA-Z][\w.-]{2,}\b', search_result.lower()):
+            if word in user_words or word in stop_words:
+                continue
+            word_counts[word] = word_counts.get(word, 0) + 1
+
+        # Words appearing >= 2 times, sorted by frequency (descending)
+        new_keywords = [
+            word for word, count in sorted(word_counts.items(), key=lambda x: -x[1])
+            if count >= 2
+        ][:10]  # Cap at 10 keywords
+
+        return new_keywords, candidate_urls
+
+    @staticmethod
+    def _build_chain_query(
+        round_idx: int,
+        user_msg: str,
+        search_hint: str,
+        discovered_keywords: List[str],
+        static_suffixes: List[str],
+        attempted_queries: set,
+    ) -> Optional[str]:
+        """Build a search query that evolves across rounds.
+
+        Round 0: user_msg + error_hint + "official docs"
+        Round 1: user_msg + "documentation"
+        Round 2+: user_msg + discovered keywords subset (chain queries)
+        Falls back to static suffixes when keywords are exhausted.
+        """
+        query_parts = [user_msg.strip()]
+
+        if round_idx == 0:
+            if search_hint:
+                query_parts.append(search_hint)
+            query_parts.append("official docs")
+        elif round_idx == 1:
+            query_parts.append("documentation")
+        else:
+            # Phase 2: use discovered keywords for deeper drilling
+            # Pick a window of keywords based on round index
+            kw_start = (round_idx - 2) * 2
+            kw_slice = discovered_keywords[kw_start:kw_start + 3]
+            if kw_slice:
+                query_parts.append(" ".join(kw_slice))
+            else:
+                # Keywords exhausted — fall back to static suffixes
+                suffix_idx = round_idx - 2 - (len(discovered_keywords) + 1) // 2
+                if 0 <= suffix_idx < len(static_suffixes):
+                    query_parts.append(static_suffixes[suffix_idx])
+                else:
+                    # All suffixes exhausted too
+                    return None
+
+        query = " ".join(part for part in query_parts if part)
+        if query in attempted_queries:
+            return None
+        return query
 
     def render_partial(self, reason: str) -> str:
         return render_grounding_partial(reason, self.turn_source_urls())

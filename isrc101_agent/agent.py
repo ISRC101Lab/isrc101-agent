@@ -53,6 +53,17 @@ from .url_utils import (
 _log = get_logger(__name__)
 console = Console()
 
+
+def set_console(c):
+    """Replace the module-level console (used by TUI mode to inject TUIConsole)."""
+    global console
+    console = c
+
+
+def get_console():
+    """Return the current module-level console."""
+    return console
+
 _PLAN_TITLE_RE = re.compile(r'##\s*Plan:\s*(.+)')
 _PLAN_STEP_RE = re.compile(r'(\d+)\.\s*\[(\w+)\]\s*`([^`]+)`\s*[—\-]\s*(.+)')
 
@@ -87,6 +98,18 @@ class ProgressContext:
         self._separator = SEPARATOR
 
         self._start_time = time.monotonic()
+        self._is_tui = getattr(self.console, '_is_tui', False)
+
+        if self._is_tui:
+            # TUI mode: update activity bar instead of using Status spinner
+            try:
+                app = self.console._app
+                msg = self.base_message
+                app.set_activity_progress(msg)
+            except Exception:
+                pass
+            return self
+
         self._stop_event = threading.Event()
         self.status = Status(
             f"  [{self._dim}]{self.base_message}[/{self._dim}]",
@@ -111,6 +134,14 @@ class ProgressContext:
             self._stop_event.wait(self.update_interval)
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        if getattr(self, '_is_tui', False):
+            # TUI mode: clear activity bar (non-blocking)
+            try:
+                app = self.console._app
+                app.clear_activity()
+            except (RuntimeError, AttributeError):
+                pass
+            return False
         if self._stop_event:
             self._stop_event.set()
         if self._update_thread:
@@ -489,7 +520,7 @@ class Agent:
         self._web_tool_calls_this_turn = 0
         self._max_web_tool_calls_per_turn = self.max_web_calls_per_turn
         _empty_streak = 0
-        _MAX_EMPTY = 3
+        _MAX_EMPTY = 5
 
         base_system = build_system_prompt(
             self._mode,
@@ -562,12 +593,45 @@ class Agent:
                 return finalized_content
 
             _empty_streak += 1
-            _log.warning("Empty LLM response (streak: %d/%d)", _empty_streak, _MAX_EMPTY)
-            self._print(f"[{_T_DIM}]  (empty response, retrying {_empty_streak}/{_MAX_EMPTY}...)[/{_T_DIM}]")
+
+            # Reasoning-only: model is thinking but producing no visible content
+            has_reasoning = bool(response.reasoning_content)
+            if has_reasoning:
+                _log.warning("Reasoning-only LLM response (streak: %d/%d)",
+                             _empty_streak, _MAX_EMPTY)
+                self._print(f"[{_T_DIM}]  (reasoning only — nudging for response "
+                            f"{_empty_streak}/{_MAX_EMPTY}...)[/{_T_DIM}]")
+            else:
+                _log.warning("Empty LLM response (streak: %d/%d)",
+                             _empty_streak, _MAX_EMPTY)
+                self._print(f"[{_T_DIM}]  (empty response, retrying "
+                            f"{_empty_streak}/{_MAX_EMPTY}...)[/{_T_DIM}]")
+
             if _empty_streak >= _MAX_EMPTY:
+                # Last resort: if we have reasoning content, return it
+                if has_reasoning:
+                    fallback = response.reasoning_content
+                    self._print(f"[{_T_DIM}]  (using reasoning as fallback response)[/{_T_DIM}]")
+                    self.conversation.append({"role": "assistant",
+                                              "content": fallback})
+                    return fallback
                 msg = f"Stopping: {_MAX_EMPTY} consecutive empty responses."
                 self._print(f"\n[{_T_WARN}]{msg}[/{_T_WARN}]")
                 return msg
+
+            # Nudge: add context so the retry prompt differs from the
+            # original, giving the model a chance to produce output.
+            if has_reasoning:
+                self.conversation.append({
+                    "role": "assistant",
+                    "content": "(thinking...)",
+                    "reasoning_content": response.reasoning_content,
+                })
+                self.conversation.append({
+                    "role": "user",
+                    "content": ("Your reasoning looks good. "
+                                "Now please provide your actual response."),
+                })
 
     # ── Context window management (delegated to ContextWindowManager) ──
 
@@ -590,9 +654,20 @@ class Agent:
         return self._ctx.truncate_tool_result(result)
 
     def _prepare_messages(self, system_prompt: str) -> list:
+        on_trimmed = None
+        if getattr(console, '_is_tui', False):
+            def on_trimmed(trimmed, ctx_window):
+                try:
+                    app = console._app
+                    app.set_activity_progress(
+                        f"trimmed {trimmed} msgs ({ctx_window:,} tok window)"
+                    )
+                except (RuntimeError, AttributeError):
+                    pass
         return self._ctx.prepare_messages(
             self.conversation, system_prompt, console,
             tool_schemas=self.tools.schemas,
+            on_trimmed=on_trimmed,
         )
 
     # ── Streaming response ─────────────────────
@@ -775,7 +850,7 @@ class Agent:
                     else:
                         result, elapsed = self._execute_single_tool_call(tc)
                 else:
-                    if not self.quiet:
+                    if not self.quiet and not getattr(console, '_is_tui', False):
                         with Status(f"  [{_T_DIM}]  running…[/{_T_DIM}]",
                                     console=console, spinner="dots", spinner_style=_T_ACCENT):
                             result, elapsed = self._execute_single_tool_call(tc)
@@ -950,7 +1025,7 @@ class Agent:
         )
 
         t0 = time.monotonic()
-        if not self.quiet:
+        if not self.quiet and not getattr(console, '_is_tui', False):
             with Status(
                 f"  [{_T_DIM}]Summarizing conversation history via LLM...[/{_T_DIM}]",
                 console=console,

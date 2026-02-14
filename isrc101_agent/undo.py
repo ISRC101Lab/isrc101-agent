@@ -10,6 +10,7 @@ from typing import Optional, List, Dict
 # Store backups in project .isrc101-undo directory
 UNDO_DIR_NAME = ".isrc101-undo"
 MAX_UNDO_HISTORY = 50
+_FLUSH_INTERVAL = 5  # flush to disk every N operations
 
 
 @dataclass
@@ -30,6 +31,7 @@ class UndoManager:
         self.undo_dir = self.project_root / UNDO_DIR_NAME
         self.history_file = self.undo_dir / "history.json"
         self._history: List[FileBackup] = []
+        self._dirty = 0  # count of unsaved operations
         self._load_history()
 
     def _ensure_dir(self):
@@ -66,18 +68,40 @@ class UndoManager:
 
         data = [asdict(b) for b in self._history]
         self.history_file.write_text(json.dumps(data, indent=2))
+        self._dirty = 0
 
-    def backup_file(self, path: str, operation: str, tool_args: Dict) -> bool:
-        """Backup a file before modification."""
-        fp = self.project_root / path
-        content = None
+    def _maybe_flush(self):
+        """Flush to disk if enough operations have accumulated."""
+        if self._dirty >= _FLUSH_INTERVAL:
+            self._save_history()
 
-        if fp.exists() and fp.is_file():
-            try:
-                content = fp.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                # Skip binary files
-                return False
+    def flush(self):
+        """Explicitly flush pending history to disk."""
+        if self._dirty > 0:
+            self._save_history()
+
+    def backup_file(self, path: str, operation: str, tool_args: Dict,
+                    content: Optional[str] = ...) -> bool:
+        """Backup a file before modification.
+
+        Args:
+            path: Relative file path within project.
+            operation: Operation name (str_replace, write_file, etc.).
+            tool_args: Original tool arguments for the operation.
+            content: Pre-read file content. Pass explicitly to avoid
+                     re-reading the file. Use ``None`` to indicate the
+                     file does not exist yet. Omit (sentinel ``...``)
+                     to let the manager read it from disk.
+        """
+        if content is ...:
+            # Caller did not supply content — read from disk
+            fp = self.project_root / path
+            content = None
+            if fp.exists() and fp.is_file():
+                try:
+                    content = fp.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    return False
 
         backup = FileBackup(
             path=path,
@@ -87,13 +111,17 @@ class UndoManager:
             tool_args=tool_args,
         )
         self._history.append(backup)
-        self._save_history()
+        self._dirty += 1
+        self._maybe_flush()
         return True
 
     def undo_last(self) -> Optional[str]:
         """Undo the last file operation. Returns status message."""
         if not self._history:
             return None
+
+        # Flush any pending saves first so on-disk state is consistent
+        self.flush()
 
         backup = self._history.pop()
         fp = self.project_root / backup.path

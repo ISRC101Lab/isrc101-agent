@@ -78,6 +78,7 @@ SLASH_COMMAND_SPECS: tuple[SlashCommandSpec, ...] = (
     SlashCommandSpec("/undo",     "/undo",        "Revert the last file change made by the agent", ("revert", "rollback")),
     SlashCommandSpec("/diff",     "/diff",        "Show uncommitted changes as a unified diff", ("git", "changes", "patch")),
     SlashCommandSpec("/config",   "/config [key|set|reset|diff]", "Manage configuration settings interactively", ("settings", "preferences", "customize")),
+    SlashCommandSpec("/copy",     "/copy [all|N|file <path>]", "Copy conversation text to clipboard or file", ("clipboard", "export", "paste")),
     SlashCommandSpec("/stats",    "/stats",       "Show token usage and cost for this session", ("tokens", "usage", "cost")),
     SlashCommandSpec("/git",      "/git",         "Show git branch, status, and recent commits", ("branch", "commit", "status")),
     SlashCommandSpec("/reset",    "/reset",       "Clear conversation history and start fresh", ("clear", "conversation")),

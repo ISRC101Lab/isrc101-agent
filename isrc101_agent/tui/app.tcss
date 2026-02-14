@@ -1,0 +1,104 @@
+/* isrc101-agent TUI — Textual CSS */
+
+Screen {
+    layout: vertical;
+    background: #0D1117;
+}
+
+Header {
+    dock: top;
+    background: #161B22;
+    color: #7FA6D9;
+    height: 1;
+}
+
+#messages {
+    background: #0D1117;
+    color: #E6EDF3;
+    scrollbar-color: #484F58;
+    scrollbar-color-hover: #6E7681;
+    scrollbar-color-active: #8B949E;
+    scrollbar-background: #0D1117;
+    padding: 0 1;
+}
+
+/* CommandPalette — autocomplete dropdown above input */
+#command_palette {
+    dock: bottom;
+    height: auto;
+    max-height: 14;
+    background: #161B22;
+    color: #E6EDF3;
+    padding: 0 1;
+    display: none;
+    border-top: solid #30363D;
+}
+
+/* Activity bar — shows tool activity like "● Read file.py" */
+ActivityBar {
+    dock: bottom;
+    background: #0D1117;
+    color: #8B949E;
+    height: 1;
+    padding: 0 1;
+    display: none;
+}
+
+/* Status bar — model / mode / context */
+StatusBar {
+    dock: bottom;
+    background: #161B22;
+    color: #6E7681;
+    height: 1;
+    padding: 0 1;
+}
+
+/* Input — minimal: just a top horizontal separator, no box */
+ChatInput {
+    dock: bottom;
+    background: #0D1117;
+    border-top: solid #30363D;
+    border-bottom: none;
+    border-left: none;
+    border-right: none;
+    height: 3;
+    padding: 0 1;
+    color: #E6EDF3;
+}
+
+ChatInput:focus {
+    border-top: solid #7FA6D9;
+}
+
+ChatInput.-disabled {
+    opacity: 0.5;
+}
+
+ConfirmInput {
+    dock: bottom;
+    background: #161B22;
+    border-top: solid #E3B341;
+    border-bottom: none;
+    border-left: none;
+    border-right: none;
+    height: 3;
+    padding: 0 1;
+    color: #E6EDF3;
+}
+
+SelectionInput {
+    dock: bottom;
+    background: #161B22;
+    border-top: solid #7FA6D9;
+    border-bottom: none;
+    border-left: none;
+    border-right: none;
+    height: auto;
+    max-height: 20;
+    padding: 0 1;
+    color: #E6EDF3;
+}
+
+SelectionInput:focus {
+    border-top: solid #57DB9C;
+}

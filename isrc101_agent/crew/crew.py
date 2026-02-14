@@ -19,7 +19,7 @@ class CrewConfig:
     """
 
     max_parallel: int = 2
-    per_agent_budget: int = 200_000
+    per_agent_budget: int = 1_000_000
     token_budget: int = 0              # 0 = auto-scale
     auto_review: bool = True
     max_rework: int = 2
@@ -48,7 +48,7 @@ class CrewConfig:
 
         return cls(
             max_parallel=data.get("max-parallel", 2),
-            per_agent_budget=data.get("per-agent-budget", 200_000),
+            per_agent_budget=data.get("per-agent-budget", 1_000_000),
             token_budget=data.get("token-budget", 0),
             auto_review=data.get("auto-review", True),
             max_rework=data.get("max-rework", 2),
