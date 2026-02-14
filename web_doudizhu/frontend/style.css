@@ -1314,6 +1314,14 @@ select option {
     text-align: center;
 }
 
+.cards-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: center;
+    min-height: 140px;
+}
+
 /* 玩家头像优化 */
 .player-avatar {
     background: linear-gradient(135deg, #ffcc00, #ff9900);

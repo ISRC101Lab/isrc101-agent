@@ -19,6 +19,7 @@ class MessageType(Enum):
     REWORK_NEEDED = "rework_needed"      # worker → coordinator (reviewer found issues)
     REWORK_ASSIGNED = "rework_assigned"  # coordinator → coder worker
     STATUS_UPDATE = "status_update"      # worker → coordinator (progress)
+    SCRATCHPAD_WRITE = "scratchpad_write"  # worker → coordinator (knowledge sharing)
     SHUTDOWN = "shutdown"                # coordinator → all workers
 
 

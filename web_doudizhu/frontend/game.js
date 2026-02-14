@@ -293,11 +293,20 @@ class DouDizhuGame {
         this.updatePlayers(state.players);
         this.updateTable(state);
         
+        // 更新当前玩家的手牌
+        if (this.playerId && state.players[this.playerId]) {
+            const myCards = state.players[this.playerId].cards;
+            if (myCards && myCards.length > 0) {
+                this.updatePlayerHand(myCards);
+            }
+        }
+        
         // 根据阶段显示不同界面
         switch (state.phase) {
             case 'WAITING':
                 this.showWaitingPhase();
                 break;
+            case 'DEALING':
             case 'BIDDING':
                 this.showBiddingPhase(state.current_player === this.playerId);
                 break;
@@ -307,6 +316,15 @@ class DouDizhuGame {
             case 'FINISHED':
                 this.showGameResult(state.winner, {});
                 break;
+            default:
+                // 处理中文阶段名称
+                if (state.phase === '发牌' || state.phase === '叫地主') {
+                    this.showBiddingPhase(state.current_player === this.playerId);
+                } else if (state.phase === '出牌') {
+                    this.showPlayPhase(state.current_player === this.playerId);
+                } else if (state.phase === '结束') {
+                    this.showGameResult(state.winner, {});
+                }
         }
     }
     
@@ -429,15 +447,25 @@ class DouDizhuGame {
         // 更新地主牌
         this.updateLandlordCards(state.landlord_cards);
         
-        // 更新最后出牌
-        if (state.last_cards && state.last_cards.length > 0) {
+        // 更新最后出牌 - 支持两种格式
+        let lastCards = [];
+        let lastPattern = state.last_pattern;
+        
+        if (state.last_pattern_details && state.last_pattern_details.cards) {
+            lastCards = state.last_pattern_details.cards;
+            lastPattern = state.last_pattern_details.pattern_type || lastPattern;
+        } else if (state.last_cards) {
+            lastCards = state.last_cards;
+        }
+        
+        if (lastCards && lastCards.length > 0) {
             tableCenter.innerHTML = `
                 <div class="last-play">
                     <div class="last-player">${state.players[state.last_player]?.name || state.last_player}</div>
                     <div class="last-cards">
-                        ${this.renderCards(state.last_cards)}
+                        ${this.renderCards(lastCards)}
                     </div>
-                    <div class="last-pattern">${state.last_pattern || ''}</div>
+                    <div class="last-pattern">${lastPattern || ''}</div>
                 </div>
             `;
         } else {
@@ -464,20 +492,44 @@ class DouDizhuGame {
      * 更新玩家手牌
      */
     updatePlayerHand(cards) {
-        const handDisplay = document.getElementById('hand-display');
-        if (!handDisplay) return;
+        const cardsContainer = document.getElementById('cards-container');
+        if (!cardsContainer) return;
         
-        handDisplay.innerHTML = '';
+        cardsContainer.innerHTML = '';
         
+        // 支持字符串数组或对象数组
         cards.forEach((card, index) => {
-            const cardElement = this.createCardElement(card, index);
-            handDisplay.appendChild(cardElement);
+            // 如果是字符串直接使用，否则从对象中提取
+            let cardStr = typeof card === 'string' ? card : card.card || card;
+            const cardElement = this.createCardElement(cardStr, index);
+            cardsContainer.appendChild(cardElement);
         });
         
         this.selectedCards.clear();
         this.updateSelectedCount();
     }
     
+    /**
+     * 显示示例牌（用于演示）
+     */
+    showDemoCards() {
+        const cardsContainer = document.getElementById('cards-container');
+        if (!cardsContainer) return;
+        
+        // 清空容器
+        cardsContainer.innerHTML = '';
+        
+        // 创建一组示例牌
+        const demoCards = ['3S', '4H', '5D', '6C', '7S', '8H', '9D', '10C', 'JS', 'QH', 'KD', 'AS', '2H'];
+        
+        demoCards.forEach((card, index) => {
+            const cardElement = this.createCardElement(card, index);
+            cardsContainer.appendChild(cardElement);
+        });
+        
+        console.log('示例牌已显示');
+    }
+
     /**
      * 创建牌元素
      */
@@ -655,10 +707,35 @@ class DouDizhuGame {
             return;
         }
         
-        const cardIndices = Array.from(this.selectedCards);
+        // 获取选中的牌（使用牌字符串而不是索引）
+        const cardsContainer = document.getElementById('cards-container');
+        const cardElements = cardsContainer?.querySelectorAll('.card');
+        
+        if (!cardElements) {
+            this.showMessage('无法获取手牌', 'error');
+            return;
+        }
+        
+        // 收集选中的牌
+        const selectedCardsList = [];
+        this.selectedCards.forEach(index => {
+            if (cardElements[index]) {
+                const cardData = cardElements[index].dataset.card;
+                selectedCardsList.push(cardData);
+            }
+        });
+        
+        if (selectedCardsList.length === 0) {
+            this.showMessage('请选择要出的牌', 'error');
+            return;
+        }
+        
+        console.log('出牌:', selectedCardsList);
+        
+        // 发送牌字符串列表而不是索引
         this.ws.send(JSON.stringify({
             type: 'play',
-            card_indices: cardIndices
+            cards: selectedCardsList
         }));
         
         this.selectedCards.clear();
@@ -1122,6 +1199,10 @@ class DouDizhuGame {
         });
         
         console.log('斗地主游戏已初始化');
+        
+        // 显示示例牌
+        game.showDemoCards();
+        
         return game;
     }
 }

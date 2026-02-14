@@ -138,10 +138,33 @@ async def create_room(request: CreateRoomRequest):
         game = game_manager.create_game(room_id)
         game.add_player(player_id, request.player_name)
         
+        # 自动添加两个AI玩家
+        ai_names = ["电脑玩家1", "电脑玩家2"]
+        for i, ai_name in enumerate(ai_names):
+            if len(game.players) < 3:
+                ai_id = f"ai_{str(uuid.uuid4())[:8]}"
+                game.add_player(ai_id, ai_name)
+                
+                # 广播AI加入
+                await _broadcast_message(room_id, {
+                    "type": "player_joined",
+                    "player_id": ai_id,
+                    "player_name": ai_name
+                })
+        
+        # 游戏应该已经自动开始了
+        if game.phase == GamePhase.BIDDING:
+            await _broadcast_game_state(room_id, game)
+            
+            # 如果第一个玩家是AI，开始处理AI
+            if game.current_player.startswith("ai_"):
+                await _handle_ai_turn(game, room_id)
+        
         return {
             "room_id": room_id,
             "player_id": player_id,
-            "message": "房间创建成功"
+            "message": "房间创建成功",
+            "game_started": True
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -344,26 +367,99 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, player_id: str)
 async def _handle_websocket_message(room_id: str, player_id: str, message: Dict):
     """处理WebSocket消息"""
     msg_type = message.get("type")
+    game = game_manager.get_game(room_id)
+    
+    if not game:
+        return
     
     if msg_type == "bid":
         multiplier = message.get("multiplier", 1)
-        game = game_manager.get_game(room_id)
-        if game:
-            game.bid(player_id, multiplier)
-            await _broadcast_game_state(room_id, game)
+        game.bid(player_id, multiplier)
+        await _broadcast_game_state(room_id, game)
+        
+        # 如果下一个是AI，处理AI
+        if game.current_player.startswith("ai_") and game.phase.value == "叫地主":
+            await _handle_ai_turn(game, room_id)
     
     elif msg_type == "play":
-        card_indices = message.get("card_indices", [])
-        game = game_manager.get_game(room_id)
-        if game:
-            game.play_cards(player_id, card_indices)
+        # 支持两种格式：card_indices（旧的索引方式）或 cards（新的牌字符串方式）
+        card_data = message.get("cards")
+        
+        if card_data:
+            # 使用牌字符串方式
+            # 将字符串转换为Card对象
+            from .card import Card, CardRank, CardSuit
+            
+            card_objects = []
+            for card_str in card_data:
+                try:
+                    # 解析牌字符串，如 "♠3", "♥A", "小王", "大王"
+                    if card_str in ["小王", "SJ"]:
+                        card_objects.append(Card(CardRank.SMALL_JOKER))
+                    elif card_str in ["大王", "BJ"]:
+                        card_objects.append(Card(CardRank.BIG_JOKER))
+                    else:
+                        # 普通牌：格式如 "♠3", "♥A"
+                        suit_char = card_str[0]
+                        rank_str = card_str[1:]
+                        
+                        suit_map = {
+                            "♠": CardSuit.SPADE,
+                            "♥": CardSuit.HEART,
+                            "♦": CardSuit.DIAMOND,
+                            "♣": CardSuit.CLUB
+                        }
+                        
+                        rank_map = {
+                            "3": CardRank.THREE, "4": CardRank.FOUR, "5": CardRank.FIVE,
+                            "6": CardRank.SIX, "7": CardRank.SEVEN, "8": CardRank.EIGHT,
+                            "9": CardRank.NINE, "10": CardRank.TEN, "J": CardRank.JACK,
+                            "Q": CardRank.QUEEN, "K": CardRank.KING, "A": CardRank.ACE,
+                            "2": CardRank.TWO
+                        }
+                        
+                        suit = suit_map.get(suit_char)
+                        rank = rank_map.get(rank_str)
+                        
+                        if suit and rank:
+                            card_objects.append(Card(rank, suit))
+                except Exception as e:
+                    print(f"解析牌失败: {card_str}, {e}")
+            
+            # 找到这些牌在玩家手中的索引
+            if card_objects and player_id in game.players:
+                player_cards = game.players[player_id].cards
+                indices = []
+                
+                for card_obj in card_objects:
+                    for i, pc in enumerate(player_cards):
+                        if pc.rank == card_obj.rank and pc.suit == card_obj.suit:
+                            if i not in indices:
+                                indices.append(i)
+                                break
+                
+                success = game.play_cards(player_id, indices)
+        else:
+            # 使用旧的索引方式
+            card_indices = message.get("card_indices", [])
+            success = game.play_cards(player_id, card_indices)
+        
+        if success:
             await _broadcast_game_state(room_id, game)
+            
+            # 如果下一个是AI，处理AI
+            if game.current_player.startswith("ai_") and game.phase.value == "出牌" and game.winner is None:
+                await _handle_ai_turn(game, room_id)
     
     elif msg_type == "pass":
-        game = game_manager.get_game(room_id)
-        if game:
-            game.pass_turn(player_id)
+        success = game.pass_turn(player_id)
+        
+        if success:
             await _broadcast_game_state(room_id, game)
+            
+            # 如果下一个是AI，处理AI
+            if game.current_player.startswith("ai_") and game.phase.value == "出牌" and game.winner is None:
+                await _handle_ai_turn(game, room_id)
 
 
 async def _broadcast_game_state(room_id: str, game: GameState):
@@ -394,8 +490,11 @@ async def _broadcast_message(room_id: str, message: Dict):
 
 async def _handle_ai_turn(game: GameState, room_id: str):
     """处理AI玩家的回合"""
+    # 等待一小段时间让前端更新
+    await asyncio.sleep(0.5)
+    
     if game.phase.value == "叫地主" and game.current_player.startswith("ai_"):
-        # AI叫地主
+        # AI叫地主/抢地主
         ai_player = AIPlayerFactory.create_ai("simple", game.current_player)
         multiplier = ai_player.decide_bid(game, game.current_player)
         
@@ -403,6 +502,10 @@ async def _handle_ai_turn(game: GameState, room_id: str):
         
         game.bid(game.current_player, multiplier)
         await _broadcast_game_state(room_id, game)
+        
+        # 如果游戏进入出牌阶段，继续处理AI出牌
+        if game.phase.value == "出牌" and game.current_player.startswith("ai_"):
+            await _handle_ai_turn(game, room_id)
     
     elif game.phase.value == "出牌" and game.current_player.startswith("ai_"):
         # AI出牌
@@ -421,6 +524,12 @@ async def _handle_ai_turn(game: GameState, room_id: str):
                 game.pass_turn(game.current_player)
         
         await _broadcast_game_state(room_id, game)
+        
+        # 如果游戏还没结束，继续处理下一个AI
+        if (game.phase.value == "出牌" and 
+            game.current_player.startswith("ai_") and
+            game.winner is None):
+            await _handle_ai_turn(game, room_id)
 
 
 # 静态文件服务（如果存在）

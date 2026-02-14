@@ -1,11 +1,72 @@
 """Crew main entry point — thin wrapper around Coordinator."""
 
+from dataclasses import dataclass, field
+from typing import Dict, List
+
 from rich.console import Console
 
 from ..config import Config
 from ..rendering import get_icon
 from ..theme import ACCENT as THEME_ACCENT, DIM as THEME_DIM, ERROR as THEME_ERROR
 from .coordinator import Coordinator
+
+
+@dataclass
+class CrewConfig:
+    """Configuration for crew multi-agent execution.
+
+    Parsed from the ``crew:`` section of ``.agent.conf.yml``.
+    """
+
+    max_parallel: int = 2
+    per_agent_budget: int = 200_000
+    token_budget: int = 0              # 0 = auto-scale
+    auto_review: bool = True
+    max_rework: int = 2
+    message_timeout: float = 60.0
+    task_timeout: float = 300.0
+    budget_warning_thresholds: List[int] = field(default_factory=lambda: [50, 75, 90])
+    role_budget_multipliers: Dict[str, float] = field(default_factory=lambda: {
+        "coder": 1.0,
+        "reviewer": 0.4,
+        "researcher": 0.5,
+        "tester": 0.6,
+    })
+    display_mode: str = "compact"      # "compact" | "full"
+    display_max_events: int = 4
+    display_refresh_rate: int = 2      # Hz
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "CrewConfig":
+        """Parse a CrewConfig from a raw config dictionary (YAML crew: section)."""
+        if not data:
+            return cls()
+
+        display = data.get("display", {})
+        role_mults = data.get("role-budget-multipliers", {})
+        thresholds = data.get("budget-warning-thresholds", [50, 75, 90])
+
+        return cls(
+            max_parallel=data.get("max-parallel", 2),
+            per_agent_budget=data.get("per-agent-budget", 200_000),
+            token_budget=data.get("token-budget", 0),
+            auto_review=data.get("auto-review", True),
+            max_rework=data.get("max-rework", 2),
+            message_timeout=data.get("message-timeout", 60.0),
+            task_timeout=data.get("task-timeout", 300.0),
+            budget_warning_thresholds=list(thresholds),
+            role_budget_multipliers={
+                "coder": role_mults.get("coder", 1.0),
+                "reviewer": role_mults.get("reviewer", 0.4),
+                "researcher": role_mults.get("researcher", 0.5),
+                "tester": role_mults.get("tester", 0.6),
+                **{k: v for k, v in role_mults.items()
+                   if k not in ("coder", "reviewer", "researcher", "tester")},
+            },
+            display_mode=display.get("mode", "compact"),
+            display_max_events=display.get("max-events", 4),
+            display_refresh_rate=display.get("refresh-rate", 2),
+        )
 
 
 class Crew:
@@ -15,13 +76,8 @@ class Crew:
         self.config = config
         self.console = console
 
-        crew_cfg = getattr(config, "crew_config", None) or {}
-        self.max_parallel = crew_cfg.get("max-parallel", 2)
-        self.per_agent_budget = crew_cfg.get("per-agent-budget", 200_000)
-        self.token_budget = crew_cfg.get("token-budget", 0)  # 0 = auto-scale
-        self.auto_review = crew_cfg.get("auto-review", True)
-        self.max_rework = crew_cfg.get("max-rework", 2)
-        self.message_timeout = crew_cfg.get("message-timeout", 60.0)
+        crew_raw = getattr(config, "crew_config", None) or {}
+        self.crew_cfg = CrewConfig.from_dict(crew_raw)
 
     def run(self, request: str) -> str:
         """Execute a crew request end-to-end."""
@@ -38,12 +94,7 @@ class Crew:
         coordinator = Coordinator(
             config=self.config,
             console=self.console,
-            max_parallel=self.max_parallel,
-            token_budget=self.token_budget,
-            per_agent_budget=self.per_agent_budget,
-            auto_review=self.auto_review,
-            max_rework=self.max_rework,
-            message_timeout=self.message_timeout,
+            crew_cfg=self.crew_cfg,
         )
 
         try:

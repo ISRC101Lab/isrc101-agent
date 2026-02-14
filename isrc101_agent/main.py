@@ -123,18 +123,13 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
     skill_prompt, _, missing_skills = build_skill_instructions(skills, config.enabled_skills)
     profiler.mark("skills.prompt")
 
-    from .theme import SEPARATOR
-    from .ui import (
-        MAX_SLASH_MENU_ITEMS,
-        PTK_STYLE,
-        SlashCommandCompleter,
-        make_prompt_html,
-        render_startup,
-    )
+    # 斗地主风格启动界面
+    from .ui.poker import create_poker_table, render_card, render_poker_startup
+    from .ui.cards import TOOL_CARD_MAP, MESSAGE_CARD_MAP, Suit
 
     profiler.mark("ui.import")
 
-    render_startup(console, config)
+    poker_table = render_poker_startup(console, config)
     if missing_skills:
         console.print(f"  [#E3B341]⚠ Missing skills in config:[/#E3B341] {', '.join(missing_skills)}")
     profiler.mark("startup.render")
@@ -203,6 +198,10 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
         max_items=MAX_SLASH_MENU_ITEMS,
         ui_state_manager=config.ui_state
     )
+    context_toolbar = ContextToolbar(
+        agent_ref=lambda: agent,
+        config_ref=lambda: config,
+    )
     session = PromptSession(
         history=FileHistory(str(CONFIG_DIR / "history.txt")),
         multiline=False,
@@ -210,6 +209,7 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
         complete_while_typing=True,
         style=PTK_STYLE,
         complete_style=CompleteStyle.COLUMN,
+        bottom_toolbar=context_toolbar,
     )
     profiler.mark("prompt.init")
     profiler.render(console)
@@ -238,7 +238,11 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
     while True:
         try:
             prompt_html = make_prompt_html(agent.mode)
-            user_input = session.prompt(prompt_html, key_bindings=repl_kb).strip()
+            user_input = session.prompt(
+                prompt_html,
+                key_bindings=repl_kb,
+                refresh_interval=1.0,  # Refresh toolbar every second
+            ).strip()
             pending_ctrl_d_exit = False
         except EOFError:
             if pending_ctrl_d_exit:

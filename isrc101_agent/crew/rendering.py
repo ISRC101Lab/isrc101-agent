@@ -1,4 +1,4 @@
-"""Crew-specific console rendering: real-time DAG flowchart and summary."""
+"""Crew-specific console rendering: table-based DAG, stable Live context, and summary."""
 
 import threading
 import time
@@ -72,13 +72,13 @@ def _topo_layers(tasks: List[CrewTask]) -> List[List[CrewTask]]:
 
 
 class CrewRenderer:
-    """Renders crew execution as a real-time DAG flowchart."""
+    """Renders crew execution with a stable table-based layout."""
 
-    def __init__(self, console: Console):
+    def __init__(self, console: Console, max_events: int = 4):
         self.console = console
         self._lock = threading.Lock()
         self._event_log: List[str] = []
-        self._max_events = 6
+        self._max_events = max_events
 
     def _log_event(self, markup_str: str) -> None:
         self._event_log.append(markup_str)
@@ -208,7 +208,150 @@ class CrewRenderer:
             f"[{THEME_DIM}]{get_icon('–')} rework limit {task_id}[/{THEME_DIM}]"
         )
 
-    # ── Live DAG flowchart (real-time progress) ────────────
+    def render_budget_warning(self, agent_id: str, threshold: int) -> None:
+        self._log_event(
+            f"[{THEME_WARN}]{get_icon('!')} {agent_id} budget at {threshold}%[/{THEME_WARN}]"
+        )
+
+    def render_budget_realloc(self, agent_id: str, reclaimed: int) -> None:
+        if reclaimed > 0:
+            self._log_event(
+                f"[{THEME_DIM}]{get_icon('↻')} reclaimed {reclaimed:,}tok "
+                f"from {agent_id}[/{THEME_DIM}]"
+            )
+
+    def render_status_update(self, agent_id: str, task_id: str, elapsed: float, tokens: int) -> None:
+        self._log_event(
+            f"[{THEME_DIM}]{get_icon('▸')} {agent_id} {task_id} "
+            f"{elapsed:.0f}s {tokens:,}tok[/{THEME_DIM}]"
+        )
+
+    # ── Live progress display (three composable sections) ──
+
+    def _build_flow_line(self, tasks: List[CrewTask], states: Dict[str, str]) -> Text:
+        """Single-line compact DAG: ✓t1 → [ ▸t2 | ▸t3 ] → ○t4"""
+        layers = _topo_layers(tasks)
+        text = Text()
+        text.append("  Flow: ", style=f"bold {THEME_DIM}")
+
+        for i, layer in enumerate(layers):
+            if i > 0:
+                text.append(" → ", style=THEME_DIM)
+            if len(layer) == 1:
+                t = layer[0]
+                state_str = states.get(t.id, "pending")
+                icon_char, color, _label = _STATE_DISPLAY.get(
+                    state_str, ("?", THEME_DIM, state_str))
+                icon = get_icon(icon_char)
+                text.append(f"{icon}{t.id}", style=f"bold {color}")
+            else:
+                text.append("[ ", style=THEME_ACCENT)
+                for j, t in enumerate(layer):
+                    if j > 0:
+                        text.append(" | ", style=THEME_DIM)
+                    state_str = states.get(t.id, "pending")
+                    icon_char, color, _label = _STATE_DISPLAY.get(
+                        state_str, ("?", THEME_DIM, state_str))
+                    icon = get_icon(icon_char)
+                    text.append(f"{icon}{t.id}", style=f"bold {color}")
+                text.append(" ]", style=THEME_ACCENT)
+
+        return text
+
+    def _build_task_table(
+        self,
+        tasks: List[CrewTask],
+        states: Dict[str, str],
+        start_times: Dict[str, float],
+    ) -> Table:
+        """Rich Table with fixed columns: ID, Role, Worker, Status, Time."""
+        now = time.monotonic()
+        table = Table(
+            show_header=True,
+            header_style=f"bold {THEME_DIM}",
+            border_style=THEME_BORDER,
+            padding=(0, 1),
+            show_edge=False,
+            pad_edge=True,
+        )
+        table.add_column("ID", style="bold", min_width=6)
+        table.add_column("Role", min_width=12)
+        table.add_column("Worker", min_width=12)
+        table.add_column("Status", min_width=10)
+        table.add_column("Time", justify="right", min_width=8)
+
+        for task in tasks:
+            state_str = states.get(task.id, "pending")
+            icon_char, color, label = _STATE_DISPLAY.get(
+                state_str, ("?", THEME_DIM, state_str))
+            icon = get_icon(icon_char)
+            role_color = _color_for_role(task.assigned_role)
+            worker = task.assigned_worker or "-"
+
+            # Time display
+            if state_str in ("assigned", "running", "in_review", "rework"):
+                start = start_times.get(task.id)
+                time_str = f"{now - start:.1f}s" if start else "-"
+            else:
+                time_str = "-"
+
+            table.add_row(
+                task.id,
+                f"[{role_color}]{task.assigned_role}[/{role_color}]",
+                f"[{role_color}]{worker}[/{role_color}]",
+                f"[{color}]{icon} {label}[/{color}]",
+                time_str,
+            )
+
+        return table
+
+    def _build_footer(
+        self,
+        tasks: List[CrewTask],
+        states: Dict[str, str],
+        budget_used: int,
+        budget_max: int,
+    ) -> Text:
+        """Progress bar + budget info + recent event log."""
+        total_count = len(tasks)
+        done_count = sum(
+            1 for t in tasks
+            if states.get(t.id) in ("done", "failed", "skipped")
+        )
+
+        pct = int(done_count / total_count * 100) if total_count > 0 else 0
+        budget_pct = int(budget_used / budget_max * 100) if budget_max > 0 else 0
+        bar_w = 12
+        filled = int(bar_w * pct / 100)
+        bar = get_icon("●") * filled + get_icon("·") * (bar_w - filled)
+        bar_color = THEME_SUCCESS if pct >= 100 else (THEME_INFO if done_count > 0 else THEME_DIM)
+
+        footer = Text()
+        footer.append("  ")
+        footer.append(f"{bar} ", style=bar_color)
+        footer.append(f"{done_count}/{total_count}", style=f"bold {bar_color}")
+
+        # Budget display with warning indicator
+        def _fmt_tokens(n: int) -> str:
+            if n >= 1_000_000:
+                return f"{n / 1_000_000:.1f}M"
+            if n >= 1_000:
+                return f"{n / 1_000:.0f}k"
+            return str(n)
+
+        budget_str = f"  Budget: {_fmt_tokens(budget_used)}/{_fmt_tokens(budget_max)} ({budget_pct}%)"
+        if budget_pct >= 80:
+            footer.append(f"  [!]{budget_str}", style=f"bold {THEME_WARN}")
+        else:
+            footer.append(budget_str, style=THEME_DIM)
+
+        # Event log (last N entries)
+        if self._event_log:
+            for ev in self._event_log[-self._max_events:]:
+                footer.append("\n  ")
+                footer.append_text(Text.from_markup(ev))
+
+        return footer
 
     def build_progress_display(
         self,
@@ -219,116 +362,16 @@ class CrewRenderer:
         budget_max: int,
         per_agent_limit: int = 0,
     ) -> Panel:
-        """Build a real-time DAG flowchart panel.
+        """Build a stable table-based progress panel.
 
-        Shows each task as a node in a vertical flowchart with:
-        - Status icon + color coding
-        - Live elapsed time for running tasks
-        - Fork/merge connectors for parallel tasks
-        - Progress bar and token budget
-        - Recent event log
+        Three stacked sections: flow line, task table, footer (progress + events).
         """
-        now = time.monotonic()
-        layers = _topo_layers(tasks)
-        flow = Text()
-        done_count = 0
-        total_count = len(tasks)
-
-        for layer_idx, layer in enumerate(layers):
-            is_parallel = len(layer) > 1
-
-            # ── Draw connector from previous layer ──
-            if layer_idx > 0:
-                if is_parallel:
-                    # Fork: single line splits into multiple
-                    flow.append("       ┌", style=THEME_BORDER)
-                    flow.append("─" * 4, style=THEME_BORDER)
-                    for k in range(len(layer) - 1):
-                        flow.append("┬", style=THEME_BORDER)
-                        flow.append("─" * 16, style=THEME_BORDER)
-                    flow.append("┐\n", style=THEME_BORDER)
-                else:
-                    flow.append("       │\n", style=THEME_BORDER)
-
-            # ── Render each task node in this layer ──
-            for task_idx, task in enumerate(layer):
-                state_str = states.get(task.id, "pending")
-                icon_char, color, label = _STATE_DISPLAY.get(
-                    state_str, ("?", THEME_DIM, state_str))
-                icon = get_icon(icon_char)
-                role_color = _color_for_role(task.assigned_role)
-                worker = task.assigned_worker or task.assigned_role
-
-                # Determine time display
-                if state_str in ("assigned", "running", "in_review", "rework"):
-                    start = start_times.get(task.id)
-                    time_str = f"{now - start:.0f}s" if start else ""
-                elif state_str == "done":
-                    done_count += 1
-                    time_str = ""
-                elif state_str in ("failed", "skipped"):
-                    done_count += 1
-                    time_str = ""
-                else:
-                    time_str = ""
-
-                # Connector prefix
-                if is_parallel:
-                    if task_idx == 0:
-                        prefix = "  ├── "
-                    elif task_idx == len(layer) - 1:
-                        prefix = "  └── "
-                    else:
-                        prefix = "  ├── "
-                    flow.append(prefix, style=THEME_BORDER)
-                else:
-                    flow.append("  ", style="")
-
-                # Task node: [icon] task_id  role  status  time
-                flow.append(f" {icon} ", style=f"bold {color}")
-                flow.append(f"{task.id} ", style=f"bold {color}")
-                flow.append(f"{worker:<12} ", style=role_color)
-                flow.append(f"{label:<10}", style=color)
-                if time_str:
-                    flow.append(f" {time_str}", style=f"bold {THEME_INFO}")
-                flow.append("\n")
-
-            # ── Merge connector after parallel layer ──
-            if is_parallel and layer_idx < len(layers) - 1:
-                flow.append("       └", style=THEME_BORDER)
-                flow.append("─" * 4, style=THEME_BORDER)
-                for k in range(len(layer) - 1):
-                    flow.append("┴", style=THEME_BORDER)
-                    flow.append("─" * 16, style=THEME_BORDER)
-                flow.append("┘\n", style=THEME_BORDER)
-
-        # ── Progress bar ──
-        pct = int(done_count / total_count * 100) if total_count > 0 else 0
-        budget_pct = int(budget_used / budget_max * 100) if budget_max > 0 else 0
-        bar_w = 15
-        filled = int(bar_w * pct / 100)
-        bar = get_icon("●") * filled + get_icon("·") * (bar_w - filled)
-        bar_color = THEME_SUCCESS if pct >= 100 else (THEME_INFO if done_count > 0 else THEME_DIM)
-
-        progress = Text()
-        progress.append("\n  Progress: ", style=THEME_DIM)
-        progress.append(f"{bar} ", style=bar_color)
-        progress.append(f"{done_count}/{total_count}", style=f"bold {bar_color}")
-        budget_info = f"  |  Budget: {budget_used:,}/{budget_max:,} ({budget_pct}%)"
-        if per_agent_limit > 0:
-            budget_info += f"  |  Per-agent: {per_agent_limit:,}"
-        progress.append(budget_info, style=THEME_DIM)
-
-        # ── Event log ──
-        events = Text()
-        if self._event_log:
-            events.append("\n")
-            for ev in self._event_log[-5:]:
-                events.append("\n  ")
-                events.append_text(Text.from_markup(ev))
+        flow_line = self._build_flow_line(tasks, states)
+        task_table = self._build_task_table(tasks, states, start_times)
+        footer = self._build_footer(tasks, states, budget_used, budget_max)
 
         return Panel(
-            Group(flow, progress, events),
+            Group(flow_line, Text(""), task_table, Text(""), footer),
             title=f"[bold {THEME_ACCENT}] Crew Progress [/bold {THEME_ACCENT}]",
             title_align="left",
             border_style=THEME_BORDER,

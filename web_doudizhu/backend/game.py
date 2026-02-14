@@ -61,6 +61,11 @@ class GameState:
         self.phase = GamePhase.DEALING
         self.started_at = datetime.now()
         
+        # 重置叫分状态
+        self.bid_status = {}
+        self.landlord = None
+        self.base_multiplier = 1
+        
         # 创建并洗牌
         self.deck = CardUtils.create_deck()
         random.shuffle(self.deck)
@@ -72,6 +77,10 @@ class GameState:
             end = start + 17
             self.players[player_id].cards = self.deck[start:end]
             self.players[player_id].cards = CardUtils.sort_cards(self.players[player_id].cards)
+            # 重置玩家角色
+            self.players[player_id].role = PlayerRole.FARMER
+            # 初始化叫分状态
+            self.bid_status[player_id] = None
         
         # 留底牌
         self.deck = self.deck[51:54]  # 最后3张牌
@@ -81,37 +90,59 @@ class GameState:
         self.phase = GamePhase.BIDDING
     
     def bid(self, player_id: str, multiplier: int) -> bool:
-        """叫地主"""
+        """叫地主/抢地主"""
         if self.phase != GamePhase.BIDDING:
             return False
         
         if player_id != self.current_player:
             return False
         
-        if multiplier > self.base_multiplier:
-            self.base_multiplier = multiplier
+        player_ids = list(self.players.keys())
+        
+        # 记录叫地主的玩家
+        if multiplier > 0:
+            # 叫地主/抢地主
+            if multiplier > self.base_multiplier:
+                self.base_multiplier = multiplier
+            
+            # 如果之前已经有地主，现在被抢了
+            if self.landlord is not None and self.landlord != player_id:
+                # 之前的地主变成农民
+                self.players[self.landlord].role = PlayerRole.FARMER
+            
             self.landlord = player_id
             self.players[player_id].role = PlayerRole.LANDLORD
+        
+        # 记录每个玩家的叫分状态
+        if not hasattr(self, 'bid_status'):
+            self.bid_status = {pid: None for pid in player_ids}
+        
+        self.bid_status[player_id] = multiplier
+        
+        # 检查是否所有玩家都已经表态
+        all_bid = all(v is not None for v in self.bid_status.values())
+        
+        if all_bid:
+            # 所有玩家都表态了
+            if self.landlord is None:
+                # 没人叫地主，重新发牌
+                self.start_game()
+                return True
             
-            # 地主获得底牌
-            self.players[player_id].cards.extend(self.deck)
-            self.players[player_id].cards = CardUtils.sort_cards(self.players[player_id].cards)
+            # 确定地主，获得底牌
+            self.players[self.landlord].cards.extend(self.deck)
+            self.players[self.landlord].cards = CardUtils.sort_cards(self.players[self.landlord].cards)
             self.deck = []
             
             # 进入出牌阶段
             self.phase = GamePhase.PLAYING
-            self.current_player = player_id  # 地主先出牌
+            self.current_player = self.landlord  # 地主先出牌
             return True
         
-        # 下一个玩家叫地主
-        player_ids = list(self.players.keys())
+        # 下一个玩家
         current_index = player_ids.index(player_id)
         next_index = (current_index + 1) % 3
         self.current_player = player_ids[next_index]
-        
-        # 如果三轮都没人叫，重新开始
-        if self.current_player == player_ids[0] and self.landlord is None:
-            self.start_game()  # 重新发牌
         
         return True
     
@@ -185,8 +216,8 @@ class GameState:
         if player_id != self.current_player:
             return False
         
-        # 不能首轮过牌
-        if self.last_pattern is None:
+        # 不能首轮过牌（除非是有人先出了牌）
+        if self.last_pattern is None and len(self.history) == 0:
             return False
         
         # 更新当前玩家
@@ -195,7 +226,7 @@ class GameState:
         next_index = (current_index + 1) % 3
         self.current_player = player_ids[next_index]
         
-        # 如果一轮结束，清空上家牌型
+        # 如果下一家是last_player，说明一圈结束，清空上家牌型
         if self.current_player == self.last_player:
             self.last_pattern = None
             self.last_player = None
@@ -205,26 +236,32 @@ class GameState:
     def _validate_play(self, player_id: str, pattern: CardPattern) -> bool:
         """验证出牌是否合法"""
         # 如果是首轮出牌，必须包含黑桃3（地主除外）
-        if self.last_pattern is None:
+        # 检查是否还有历史记录，如果没有则是首轮
+        is_first_round = self.last_pattern is None and len(self.history) == 0
+        
+        if is_first_round:
             if self.landlord == player_id:
+                # 地主首轮可以出任意牌
                 return True
             
             # 农民首轮必须出包含黑桃3的牌
             player = self.players[player_id]
-            has_spade_3 = any(card.rank.value == 3 and card.suit.value == "♠" for card in player.cards)
-            if not has_spade_3:
-                return False
             
             # 检查出的牌是否包含黑桃3
-            cards_in_pattern = set(pattern.cards)
-            player_cards = set(player.cards)
-            spade_3 = next((card for card in player_cards if card.rank.value == 3 and card.suit.value == "♠"), None)
-            if spade_3 and spade_3 not in cards_in_pattern:
+            has_spade_3 = any(
+                card.rank.value == 3 and card.suit.value == "♠" 
+                for card in pattern.cards
+            )
+            
+            if not has_spade_3:
                 return False
             
             return True
         
         # 非首轮出牌，必须能压过上家
+        if self.last_pattern is None:
+            return True  # 没有上家，可以出任意合法牌型
+            
         return CardUtils.can_beat(self.last_pattern, pattern)
     
     def _finish_game(self, winner_id: str):
@@ -271,15 +308,26 @@ class GameState:
     
     def to_dict(self) -> Dict:
         """转换为字典（用于序列化）"""
+        # 获取地主牌（底牌）
+        landlord_cards = []
+        if self.landlord and self.landlord in self.players:
+            # 底牌在地主手里时显示
+            landlord_cards = [str(c) for c in self.deck] if len(self.deck) == 3 else []
+        
         return {
             'room_id': self.room_id,
             'phase': self.phase.value,
             'players': {pid: p.to_dict() for pid, p in self.players.items()},
             'current_player': self.current_player,
             'landlord': self.landlord,
+            'landlord_cards': landlord_cards,
             'base_multiplier': self.base_multiplier,
             'bomb_count': self.bomb_count,
             'last_pattern': self.last_pattern.pattern_type.value if self.last_pattern else None,
+            'last_pattern_details': {
+                'cards': [str(c) for c in self.last_pattern.cards] if self.last_pattern else [],
+                'pattern_type': self.last_pattern.pattern_type.value if self.last_pattern else None
+            } if self.last_pattern else None,
             'last_player': self.last_player,
             'winner': self.winner,
             'created_at': self.created_at.isoformat(),

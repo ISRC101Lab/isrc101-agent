@@ -2,6 +2,7 @@
 
 import json
 import random
+import re
 import time
 import threading
 from typing import List, Dict, Any, Optional, Generator, Tuple
@@ -34,6 +35,107 @@ INITIAL_RETRY_DELAY = 1.0
 RETRY_BACKOFF_FACTOR = 2.0
 MAX_RETRY_DELAY = 30.0
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503}
+
+# ── <think> tag parsing for models that embed reasoning inline ──
+
+_THINK_RE = re.compile(r'<think>(.*?)</think>', re.DOTALL)
+
+
+def _extract_think_tags(content: str) -> Tuple[Optional[str], str]:
+    """Extract <think>...</think> blocks from content.
+
+    Returns (reasoning_content, cleaned_content).
+    If no think tags found, returns (None, original_content).
+    """
+    if not content or '<think>' not in content:
+        return None, content
+
+    reasoning_parts = []
+    for m in _THINK_RE.finditer(content):
+        reasoning_parts.append(m.group(1).strip())
+
+    if not reasoning_parts:
+        # Opening tag without closing — treat whole remainder as thinking
+        idx = content.index('<think>')
+        reasoning = content[idx + 7:].strip()
+        cleaned = content[:idx].strip()
+        return reasoning or None, cleaned
+
+    cleaned = _THINK_RE.sub('', content).strip()
+    reasoning = '\n\n'.join(reasoning_parts)
+    return reasoning or None, cleaned
+
+
+class _ThinkTagStreamParser:
+    """Stateful parser for <think> tags in streaming content chunks.
+
+    Buffers incoming text and emits (event_type, data) tuples:
+      - ("reasoning", text) for content inside <think>...</think>
+      - ("text", text) for content outside tags
+    """
+
+    def __init__(self):
+        self._in_think = False
+        self._buffer = ""
+
+    def feed(self, chunk: str) -> List[Tuple[str, str]]:
+        """Process an incoming chunk and return a list of (event_type, data) pairs."""
+        events: List[Tuple[str, str]] = []
+        self._buffer += chunk
+
+        while self._buffer:
+            if self._in_think:
+                # Look for closing </think>
+                end_idx = self._buffer.find('</think>')
+                if end_idx >= 0:
+                    reasoning = self._buffer[:end_idx]
+                    if reasoning:
+                        events.append(("reasoning", reasoning))
+                    self._buffer = self._buffer[end_idx + 8:]  # len('</think>') == 8
+                    self._in_think = False
+                else:
+                    # No closing tag yet — check if we might be mid-tag
+                    # Keep potential partial '</think' at end of buffer
+                    safe_end = len(self._buffer)
+                    for i in range(1, min(8, len(self._buffer) + 1)):
+                        if self._buffer.endswith('</think>'[:i]):
+                            safe_end = len(self._buffer) - i
+                            break
+                    if safe_end > 0:
+                        events.append(("reasoning", self._buffer[:safe_end]))
+                        self._buffer = self._buffer[safe_end:]
+                    break  # Wait for more data
+            else:
+                # Look for opening <think>
+                start_idx = self._buffer.find('<think>')
+                if start_idx >= 0:
+                    text_before = self._buffer[:start_idx]
+                    if text_before:
+                        events.append(("text", text_before))
+                    self._buffer = self._buffer[start_idx + 7:]  # len('<think>') == 7
+                    self._in_think = True
+                else:
+                    # No opening tag — check for potential partial '<think' at end
+                    safe_end = len(self._buffer)
+                    for i in range(1, min(7, len(self._buffer) + 1)):
+                        if self._buffer.endswith('<think>'[:i]):
+                            safe_end = len(self._buffer) - i
+                            break
+                    if safe_end > 0:
+                        events.append(("text", self._buffer[:safe_end]))
+                        self._buffer = self._buffer[safe_end:]
+                    break  # Wait for more data
+
+        return events
+
+    def flush(self) -> List[Tuple[str, str]]:
+        """Flush any remaining buffered content."""
+        events: List[Tuple[str, str]] = []
+        if self._buffer:
+            etype = "reasoning" if self._in_think else "text"
+            events.append((etype, self._buffer))
+            self._buffer = ""
+        return events
 
 
 @dataclass
@@ -383,13 +485,19 @@ class LLMAdapter:
                      "completion_tokens": response.usage.completion_tokens,
                      "total_tokens": response.usage.total_tokens}
 
-        # Capture reasoning_content for DeepSeek Reasoner multi-turn.
-        # The API REQUIRES this field on every assistant message in subsequent turns.
+        # Capture reasoning_content for thinking models.
+        # Priority: 1) native reasoning_content field (DeepSeek, vLLM with parser)
+        #           2) <think> tags in content (MiniMax, Qwen3, raw vLLM)
         reasoning_content = getattr(msg, "reasoning_content", None)
+        content = msg.content
+
+        if not reasoning_content and content and '<think>' in content:
+            reasoning_content, content = _extract_think_tags(content)
+
         if reasoning_content is None and self.is_thinking_model:
             reasoning_content = ""  # Thinking models always need this field, even if empty
 
-        return LLMResponse(content=msg.content, tool_calls=tool_calls,
+        return LLMResponse(content=content, tool_calls=tool_calls,
                            usage=usage, reasoning_content=reasoning_content)
 
     def chat_stream(self, messages: List[Dict[str, Any]],
@@ -427,6 +535,8 @@ class LLMAdapter:
             reasoning_parts = ""
             tc_data: Dict[int, Dict[str, Any]] = {}
             usage = None
+            think_parser = _ThinkTagStreamParser()
+            has_native_reasoning = False  # Track if provider uses reasoning_content field
 
             try:
                 litellm_module = _get_litellm()
@@ -445,16 +555,28 @@ class LLMAdapter:
 
                     delta = chunk.choices[0].delta
 
-                    # Text
-                    if getattr(delta, "content", None):
-                        full_content += delta.content
-                        yield ("text", delta.content)
-
-                    # Reasoning (DeepSeek Reasoner)
+                    # Native reasoning_content field (DeepSeek, vLLM with parser)
                     rc = getattr(delta, "reasoning_content", None)
                     if rc:
+                        has_native_reasoning = True
                         reasoning_parts += rc
                         yield ("reasoning", rc)
+
+                    # Content — may contain inline <think> tags
+                    raw_content = getattr(delta, "content", None)
+                    if raw_content:
+                        if has_native_reasoning:
+                            # Provider already separates reasoning; pass through as text
+                            full_content += raw_content
+                            yield ("text", raw_content)
+                        else:
+                            # Parse for <think> tags (MiniMax, Qwen3, raw vLLM)
+                            for etype, edata in think_parser.feed(raw_content):
+                                if etype == "reasoning":
+                                    reasoning_parts += edata
+                                else:
+                                    full_content += edata
+                                yield (etype, edata)
 
                     # Tool calls (accumulated across chunks)
                     if getattr(delta, "tool_calls", None):
@@ -479,6 +601,15 @@ class LLMAdapter:
                             "completion_tokens": chunk.usage.completion_tokens,
                             "total_tokens": chunk.usage.total_tokens,
                         }
+
+                # Flush any remaining <think> buffer
+                if not has_native_reasoning:
+                    for etype, edata in think_parser.flush():
+                        if etype == "reasoning":
+                            reasoning_parts += edata
+                        else:
+                            full_content += edata
+                        yield (etype, edata)
 
                 # Build tool calls
                 tool_calls = None
@@ -560,11 +691,19 @@ class LLMAdapter:
                      "total_tokens": response.usage.total_tokens}
 
         reasoning_content = getattr(msg, "reasoning_content", None)
+        content = msg.content
+
+        # Fallback: extract <think> tags from content
+        if not reasoning_content and content and '<think>' in content:
+            reasoning_content, content = _extract_think_tags(content)
+
         if reasoning_content is None and self.is_thinking_model:
             reasoning_content = ""
 
-        llm_response = LLMResponse(content=msg.content, tool_calls=tool_calls,
+        llm_response = LLMResponse(content=content, tool_calls=tool_calls,
                                    usage=usage, reasoning_content=reasoning_content)
+        if llm_response.reasoning_content:
+            yield ("reasoning", llm_response.reasoning_content)
         if llm_response.content:
             yield ("text", llm_response.content)
         yield ("done", llm_response)

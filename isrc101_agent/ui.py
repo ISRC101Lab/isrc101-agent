@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from prompt_toolkit.completion import Completion, Completer
 from prompt_toolkit.formatted_text import HTML
@@ -43,6 +43,17 @@ PTK_STYLE = Style.from_dict({
     # ── Scrollbar ──
     "scrollbar.background": "bg:default",
     "scrollbar.button":     "bg:default #484F58",
+    # ── Bottom toolbar (context info bar) ──
+    "bottom-toolbar":       "bg:default #6E7681",
+    "bottom-toolbar.text":  "bg:default #6E7681",
+    # ── Toolbar semantic tokens ──
+    "ctx-label":   "#484F58",
+    "ctx-value":   "#8B949E",
+    "ctx-ok":      "#57DB9C",
+    "ctx-warn":    "#E3B341",
+    "ctx-danger":  "#F85149",
+    "ctx-accent":  "#7FA6D9",
+    "ctx-dim":     "#484F58",
 })
 
 
@@ -140,8 +151,117 @@ HELP_TEXT = ""
 
 
 def make_prompt_html(mode: str = "agent") -> HTML:
-    """Simple prompt like Claude Code: just '>' """
-    return HTML(f'<style fg="{THEME_PROMPT}">></style> ')
+    """Styled input prompt with mode indicator."""
+    icon = get_icon("❯")
+    return HTML(f'<style fg="{THEME_PROMPT}">{icon}</style> ')
+
+
+def _fmt_tokens(n: int) -> str:
+    """Format token counts: 1234567 -> '1.2M', 12345 -> '12k', 999 -> '999'."""
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.0f}k"
+    return str(n)
+
+
+class ContextToolbar:
+    """Callable that builds the bottom toolbar showing context info.
+
+    Designed to be passed as ``bottom_toolbar`` to prompt_toolkit's
+    PromptSession. It queries the agent for live context data on each
+    render tick so the bar stays current.
+    """
+
+    def __init__(self, agent_ref: Callable, config_ref: Callable):
+        """
+        Args:
+            agent_ref: callable returning the Agent instance
+            config_ref: callable returning the Config instance
+        """
+        self._agent_ref = agent_ref
+        self._config_ref = config_ref
+        self._last_parts: list = []
+
+    def __call__(self) -> list:
+        """Return prompt_toolkit formatted text tuples for the toolbar."""
+        try:
+            self._last_parts = self._build()
+        except Exception:
+            # On error, show static fallback with config info only
+            if not self._last_parts:
+                self._last_parts = self._build_fallback()
+        return self._last_parts
+
+    def _build_fallback(self) -> list:
+        """Minimal toolbar when agent context is not yet available."""
+        try:
+            config = self._config_ref()
+            model_name = config.active_model or "?"
+            mode = getattr(config, "chat_mode", "?")
+        except Exception:
+            return [("class:ctx-dim", " ready ")]
+        return [
+            ("class:ctx-dim", " "),
+            ("class:ctx-label", " model:"),
+            ("class:ctx-accent", f"{model_name} "),
+            ("class:ctx-label", " mode:"),
+            ("class:ctx-value", f"{mode} "),
+            ("class:ctx-label", " ctx:"),
+            ("class:ctx-ok", "● 0% "),
+            ("class:ctx-value", "(ready) "),
+        ]
+
+    def _build(self) -> list:
+        agent = self._agent_ref()
+        config = self._config_ref()
+
+        # Gather context info
+        ctx = agent.get_context_info()
+        pct = ctx.get("pct", 0)
+        remaining = ctx.get("remaining", 0)
+        msgs = ctx.get("messages", 0)
+        model_name = config.active_model or "?"
+        mode = agent.mode
+
+        # Context bar color based on usage
+        if pct >= 90:
+            pct_class = "class:ctx-danger"
+            pct_icon = get_icon("!")
+        elif pct >= 70:
+            pct_class = "class:ctx-warn"
+            pct_icon = get_icon("●")
+        else:
+            pct_class = "class:ctx-ok"
+            pct_icon = get_icon("●")
+
+        parts: list = []
+        parts.append(("class:ctx-dim", " "))
+
+        # Model
+        parts.append(("class:ctx-label", " model:"))
+        parts.append(("class:ctx-accent", f"{model_name} "))
+
+        # Mode
+        parts.append(("class:ctx-label", " mode:"))
+        parts.append(("class:ctx-value", f"{mode} "))
+
+        # Messages
+        parts.append(("class:ctx-label", " msgs:"))
+        parts.append(("class:ctx-value", f"{msgs} "))
+
+        # Context usage
+        parts.append(("class:ctx-label", " ctx:"))
+        parts.append((pct_class, f"{pct_icon} {pct}% "))
+        parts.append(("class:ctx-value", f"({_fmt_tokens(remaining)} left) "))
+
+        # Total tokens consumed
+        total_tok = getattr(agent, "total_tokens", 0)
+        if total_tok > 0:
+            parts.append(("class:ctx-label", " tok:"))
+            parts.append(("class:ctx-value", f"{_fmt_tokens(total_tok)} "))
+
+        return parts
 
 
 def render_startup(console, config) -> None:

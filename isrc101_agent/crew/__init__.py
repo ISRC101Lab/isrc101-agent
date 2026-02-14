@@ -7,7 +7,8 @@ from .messages import MessageBus, MessageType, CrewMessage
 from .board import TaskBoard, TaskState
 from .worker import AgentWorker
 from .coordinator import Coordinator
-from .crew import Crew
+from .crew import Crew, CrewConfig
+from .scratchpad import SharedScratchpad, ScratchEntry
 
 __all__ = [
     "RoleSpec",
@@ -24,4 +25,7 @@ __all__ = [
     "AgentWorker",
     "Coordinator",
     "Crew",
+    "CrewConfig",
+    "SharedScratchpad",
+    "ScratchEntry",
 ]

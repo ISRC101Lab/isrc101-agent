@@ -4,7 +4,7 @@ import json
 import re
 import time
 from collections import Counter
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, TYPE_CHECKING
 
 from rich.console import Console
 from rich.live import Live
@@ -16,9 +16,13 @@ from .board import TaskBoard, TaskState
 from .context import SharedTokenBudget, CrewContext
 from .messages import MessageBus, CrewMessage, MessageType
 from .roles import RoleSpec, load_roles_from_config
+from .scratchpad import SharedScratchpad
 from .tasks import CrewTask, TaskResult
 from .rendering import CrewRenderer
 from .worker import AgentWorker
+
+if TYPE_CHECKING:
+    from .crew import CrewConfig
 
 _log = get_logger(__name__)
 
@@ -33,19 +37,23 @@ into a list of concrete tasks. Each task should be assigned to exactly one role.
 Available roles:
 {roles_description}
 
-Output ONLY a JSON array of task objects. Each object must have:
+Output ONLY a valid JSON array of task objects. Do NOT use any tools or special formats.
+Do NOT include markdown code blocks. Just output raw JSON.
+
+Each object must have:
 - "id": short identifier (e.g. "t1", "t2")
 - "description": what the agent should do (be specific and actionable)
 - "assigned_role": one of the available role names
 - "depends_on": array of task IDs that must complete first (empty if independent)
 - "context_from": array of task IDs whose results should be passed as context (optional, defaults to depends_on)
+- "complexity": integer 1-5 estimating task difficulty (1=trivial, 5=very complex)
 
 Rules:
 - Tasks that can run independently should have empty depends_on
 - Order tasks logically: research before coding, coding before review, review before testing
 - Keep tasks focused — each task should be completable by a single agent
 - Include 2-6 tasks for typical requests
-- Do NOT include any text outside the JSON array
+- Output ONLY the JSON array, no other text
 
 User request: {request}
 """
@@ -82,27 +90,23 @@ class Coordinator:
         self,
         config: Config,
         console: Console,
-        max_parallel: int = 2,
-        token_budget: int = 0,
-        per_agent_budget: int = 200_000,
-        auto_review: bool = True,
-        max_rework: int = 2,
-        message_timeout: float = 60.0,
-        task_timeout: float = _DEFAULT_TASK_TIMEOUT,
+        crew_cfg: "CrewConfig",
     ):
         self.config = config
         self.console = console
-        self.max_parallel = max_parallel
-        self._token_budget_override = token_budget   # 0 = auto-scale
-        self._per_agent_budget = per_agent_budget
-        self.auto_review = auto_review
-        self.max_rework = max_rework
-        self.message_timeout = message_timeout
-        self.task_timeout = task_timeout
+        self.crew_cfg = crew_cfg
+        self.max_parallel = crew_cfg.max_parallel
+        self._token_budget_override = crew_cfg.token_budget   # 0 = auto-scale
+        self._per_agent_budget = crew_cfg.per_agent_budget
+        self.auto_review = crew_cfg.auto_review
+        self.max_rework = crew_cfg.max_rework
+        self.message_timeout = crew_cfg.message_timeout
+        self.task_timeout = crew_cfg.task_timeout
         # Budget is created after decomposition so we know the task count
         self.budget: SharedTokenBudget = None  # type: ignore[assignment]
         self.crew_context = CrewContext()
-        self.renderer = CrewRenderer(console)
+        self.scratchpad = SharedScratchpad()
+        self.renderer = CrewRenderer(console, max_events=crew_cfg.display_max_events)
         self.roles = load_roles_from_config(config)
         self._project_root = config.project_root or "."
         self.bus = MessageBus()
@@ -127,7 +131,11 @@ class Coordinator:
             total_budget = self._token_budget_override
         else:
             total_budget = self._per_agent_budget * len(tasks)
-        self.budget = SharedTokenBudget(total_budget, per_agent_limit=self._per_agent_budget)
+        self.budget = SharedTokenBudget(
+            total_budget,
+            per_agent_limit=self._per_agent_budget,
+            role_multipliers=self.crew_cfg.role_budget_multipliers,
+        )
         # Apply tokens consumed during decomposition
         if getattr(self, '_decompose_tokens', 0) > 0:
             self.budget.consume(self._decompose_tokens)
@@ -172,7 +180,9 @@ class Coordinator:
 
         preset = self.config.get_active_preset()
         llm = LLMAdapter(**preset.get_llm_kwargs())
-        system = build_system_prompt(mode="ask")
+        # Use a minimal system prompt — the full agent prompt confuses some
+        # models into trying to use tools instead of outputting JSON.
+        system = "You are a task decomposition assistant. Output only valid JSON."
 
         try:
             response = llm.chat(
@@ -223,12 +233,14 @@ class Coordinator:
             role_name = item.get("assigned_role", "coder")
             if role_name not in self.roles:
                 role_name = "coder"
+            complexity = max(1, min(5, int(item.get("complexity", 3))))
             tasks.append(CrewTask(
                 id=task_id,
                 description=item.get("description", ""),
                 assigned_role=role_name,
                 depends_on=item.get("depends_on", []),
                 context_from=item.get("context_from", []),
+                complexity=complexity,
             ))
 
         return tasks
@@ -343,8 +355,9 @@ class Coordinator:
         with Live(
             self._build_live_display(),
             console=self.console,
-            refresh_per_second=2,
-            transient=True,  # Clear live display when done
+            refresh_per_second=self.crew_cfg.display_refresh_rate,
+            transient=False,  # Keep display stable, prevent ghost frames
+            vertical_overflow="visible",
         ) as live:
             while not self.board.all_resolved():
                 if self.budget.is_exhausted():
@@ -371,7 +384,12 @@ class Coordinator:
                 elif msg.type == MessageType.REWORK_NEEDED:
                     self._on_rework_needed(msg)
                 elif msg.type == MessageType.STATUS_UPDATE:
-                    pass
+                    self._on_status_update(msg)
+                elif msg.type == MessageType.SCRATCHPAD_WRITE:
+                    self._on_scratchpad_write(msg)
+
+                # Check budget warnings for active agents
+                self._check_budget_warnings()
 
                 self._dispatch_ready_tasks()
                 live.update(self._build_live_display())
@@ -386,12 +404,19 @@ class Coordinator:
             self.board.assign(task.id, instance)
             self._task_start_times[task.id] = time.monotonic()
             context = self.board.get_context_for_task(task)
+
+            # Inject scratchpad context alongside dependency results
+            scratchpad_ctx = self.scratchpad.get_relevant_for_task(task)
+            full_context = context
+            if scratchpad_ctx:
+                full_context = (context + "\n\n" + scratchpad_ctx) if context else scratchpad_ctx
+
             self.bus.send_to_worker(CrewMessage(
                 type=MessageType.TASK_ASSIGNED,
                 sender="coordinator",
                 recipient=instance,
                 task_id=task.id,
-                content=task.description + ("\n\n## Context from previous tasks:\n" + context if context else ""),
+                content=task.description + ("\n\n## Context from previous tasks:\n" + full_context if full_context else ""),
             ))
             self.renderer.render_task_start(task)
 
@@ -420,6 +445,22 @@ class Coordinator:
                 self.renderer.render_task_failed(result)
                 del self._task_start_times[task_id]
 
+    def _check_budget_warnings(self):
+        """Check budget warning thresholds for all active agents."""
+        thresholds = self.crew_cfg.budget_warning_thresholds
+        if not thresholds:
+            return
+        for instance_name in list(self._busy_workers):
+            worker = self._workers.get(instance_name)
+            if not worker:
+                continue
+            # Use the agent_id from the budget tracking (agent_id = role-uuid)
+            # We check all registered agents in the budget
+            for agent_id in list(self.budget._agent_limits.keys()):
+                crossed = self.budget.check_warnings(agent_id, thresholds)
+                if crossed is not None:
+                    self.renderer.render_budget_warning(agent_id, crossed)
+
     # ── Message handlers ──────────────────────────────────────
 
     def _on_task_complete(self, msg: CrewMessage):
@@ -437,6 +478,12 @@ class Coordinator:
             tokens_used=msg.metadata.get("tokens", 0),
             elapsed_seconds=msg.metadata.get("elapsed", 0.0),
         )
+
+        # Budget reallocation: reclaim unused budget from finished agent
+        agent_id = msg.metadata.get("agent_id", "")
+        if agent_id:
+            reclaimed = self.budget.reallocate_from(agent_id)
+            self.renderer.render_budget_realloc(agent_id, reclaimed)
 
         # Auto-review coder output
         if (self.auto_review
@@ -531,6 +578,28 @@ class Coordinator:
                         "previous_output": previous_result.output,
                     },
                 ))
+
+    def _on_status_update(self, msg: CrewMessage):
+        """Log agent progress with token/time info."""
+        elapsed = msg.metadata.get("elapsed", 0.0)
+        tokens = msg.metadata.get("tokens", 0)
+        self.renderer.render_status_update(
+            msg.sender, msg.task_id, elapsed, tokens,
+        )
+
+    def _on_scratchpad_write(self, msg: CrewMessage):
+        """Handle scratchpad write from an agent."""
+        key = msg.metadata.get("key", "")
+        value = msg.content
+        tags = msg.metadata.get("tags", [])
+        if key:
+            self.scratchpad.write(
+                key=key,
+                value=value,
+                author=msg.sender,
+                task_id=msg.task_id,
+                tags=tags,
+            )
 
     # ── Synthesis ─────────────────────────────────────────────
 

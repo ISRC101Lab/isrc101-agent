@@ -13,6 +13,7 @@ class CrewTask:
     assigned_role: str
     depends_on: List[str] = field(default_factory=list)
     context_from: List[str] = field(default_factory=list)
+    complexity: int = 3  # 1-5 scale, estimated by decomposition LLM
     max_retries: int = 1
     status: str = "pending"  # pending | running | done | failed | skipped
     review_of: Optional[str] = None       # if review task, points to reviewed task_id

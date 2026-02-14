@@ -177,6 +177,9 @@ def create_agent_for_role(
     agent_id = f"{role.name}-{uuid.uuid4().hex[:8]}"
     agent._crew_agent_id = agent_id
 
+    # Register agent with role-specific budget multiplier
+    shared_budget.register_agent(agent_id, role.name)
+
     # Budget enforcement callback — soft stop on per-agent or global exhaustion.
     # Instead of raising immediately, set a flag so the agent can
     # finish its current iteration gracefully before stopping.

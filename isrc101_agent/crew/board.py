@@ -103,7 +103,11 @@ class TaskBoard:
     # ── Queries ───────────────────────────────────────────────
 
     def get_assignable(self) -> List[CrewTask]:
-        """Return tasks that are PENDING or REWORK and whose dependencies are satisfied."""
+        """Return tasks that are PENDING or REWORK and whose dependencies are satisfied.
+
+        Tasks are sorted by priority: downstream dependency count (desc),
+        then complexity (desc), so critical-path tasks are dispatched first.
+        """
         with self._lock:
             assignable = []
             for task_id, task in self._tasks.items():
@@ -117,7 +121,28 @@ class TaskBoard:
                 )
                 if deps_met:
                     assignable.append(task)
+            # Sort by priority: downstream count desc, then complexity desc
+            assignable.sort(
+                key=lambda t: (self._downstream_count(t.id), t.complexity),
+                reverse=True,
+            )
             return assignable
+
+    def _downstream_count(self, task_id: str) -> int:
+        """Count tasks transitively depending on this one (caller must hold _lock)."""
+        count = 0
+        visited: set = set()
+        queue = [task_id]
+        while queue:
+            current = queue.pop()
+            for tid, task in self._tasks.items():
+                if tid in visited:
+                    continue
+                if current in task.depends_on:
+                    visited.add(tid)
+                    count += 1
+                    queue.append(tid)
+        return count
 
     def get_result(self, task_id: str) -> Optional[TaskResult]:
         with self._lock:

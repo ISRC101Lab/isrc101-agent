@@ -10,6 +10,9 @@ from .context import SharedTokenBudget
 
 _log = logging.getLogger(__name__)
 
+# Interval for STATUS_UPDATE messages while a task is running (seconds)
+_STATUS_UPDATE_INTERVAL = 15.0
+
 
 class AgentWorker(threading.Thread):
     """Long-lived daemon thread — blocks on its inbox and executes tasks/reviews."""
@@ -76,8 +79,30 @@ class AgentWorker(threading.Thread):
         if previous_output:
             user_input += f"\n\n## Your Previous Output:\n{previous_output}"
 
+        # Spawn a daemon thread that sends STATUS_UPDATE every 15s while task runs
+        task_done = threading.Event()
+
+        def _status_updater():
+            while not task_done.wait(timeout=_STATUS_UPDATE_INTERVAL):
+                elapsed = time.perf_counter() - t0
+                tok = getattr(agent, "total_tokens", 0)
+                self.bus.send_to_coordinator(CrewMessage(
+                    type=MessageType.STATUS_UPDATE,
+                    sender=self.worker_name,
+                    recipient="coordinator",
+                    task_id=msg.task_id,
+                    metadata={"elapsed": elapsed, "tokens": tok},
+                ))
+
+        updater = threading.Thread(
+            target=_status_updater, daemon=True,
+            name=f"status-{self.worker_name}",
+        )
+        updater.start()
+
         try:
             output = agent.chat(user_input)
+            task_done.set()
             elapsed = time.perf_counter() - t0
             self.bus.send_to_coordinator(CrewMessage(
                 type=MessageType.TASK_COMPLETE,
@@ -88,6 +113,7 @@ class AgentWorker(threading.Thread):
                 metadata={"tokens": agent.total_tokens, "elapsed": elapsed},
             ))
         except Exception as e:
+            task_done.set()
             elapsed = time.perf_counter() - t0
             self.bus.send_to_coordinator(CrewMessage(
                 type=MessageType.TASK_FAILED,
