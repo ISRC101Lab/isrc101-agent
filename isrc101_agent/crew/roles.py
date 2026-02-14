@@ -173,18 +173,19 @@ def create_agent_for_role(
         answer_style="concise",
         quiet=True,  # Suppress console output in crew mode
         config=config,
+        auto_compact_threshold=70,  # Auto-compact at 70% context usage
     )
 
     # Attach budget reference for token tracking
     agent._crew_budget = shared_budget
 
-    # Budget enforcement callback — raises if exhausted
+    # Budget enforcement callback — soft stop on exhaustion
+    # Instead of raising immediately, set a flag so the agent can
+    # finish its current iteration gracefully before stopping.
     def _budget_callback(tokens: int):
         shared_budget.consume(tokens)
         if shared_budget.is_exhausted():
-            raise RuntimeError(
-                f"Token budget exhausted ({shared_budget.used:,}/{shared_budget.max_tokens:,})"
-            )
+            agent._budget_exhausted = True
 
     agent.token_callback = _budget_callback
 

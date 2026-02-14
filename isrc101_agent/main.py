@@ -281,6 +281,17 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
 
                 console.print(f"[#6E7681]{traceback.format_exc()}[/#6E7681]")
 
+        # Context usage hint after each turn
+        try:
+            ctx_info = agent.get_context_info()
+            pct = ctx_info["pct"]
+            if pct >= 90:
+                console.print(f"\n  [#F85149]Context {pct}% full — run /compact to free space[/#F85149]")
+            elif pct >= 70:
+                console.print(f"\n  [#6E7681]Context {pct}% used (~{ctx_info['remaining']:,} tokens remaining)[/#6E7681]")
+        except Exception:
+            pass
+
     # ── Auto-save session on exit ──
     if agent.conversation:
         # Generate auto-save session name

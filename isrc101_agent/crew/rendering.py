@@ -1,17 +1,21 @@
-"""Crew-specific console rendering: agent panels, progress, and summary table."""
+"""Crew-specific console rendering: real-time DAG flowchart and summary."""
 
 import threading
-from typing import List, Optional
+import time
+from typing import Dict, List, Optional, Tuple
 
-from rich.console import Console
+from rich.console import Console, Group
+from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from ..theme import (
     ACCENT as THEME_ACCENT,
     BORDER as THEME_BORDER,
     DIM as THEME_DIM,
     SUCCESS as THEME_SUCCESS,
+    WARN as THEME_WARN,
     ERROR as THEME_ERROR,
     INFO as THEME_INFO,
 )
@@ -32,20 +36,59 @@ AGENT_COLORS = [
 
 
 def _color_for_role(role_name: str) -> str:
-    """Assign a deterministic color based on role name hash."""
     idx = hash(role_name) % len(AGENT_COLORS)
     return AGENT_COLORS[idx]
 
 
+# Status display: (icon_char, color, label)
+_STATE_DISPLAY = {
+    "pending":   ("○", THEME_DIM,     "waiting"),
+    "assigned":  ("▸", THEME_INFO,    "starting"),
+    "running":   ("▸", THEME_INFO,    "running"),
+    "done":      ("✓", THEME_SUCCESS, "done"),
+    "failed":    ("✗", THEME_ERROR,   "failed"),
+    "in_review": ("⊙", THEME_INFO,    "reviewing"),
+    "rework":    ("⟲", THEME_WARN,    "rework"),
+    "skipped":   ("–", THEME_DIM,     "skipped"),
+}
+
+
+def _topo_layers(tasks: List[CrewTask]) -> List[List[CrewTask]]:
+    """Group tasks into topological layers for DAG visualization."""
+    task_map = {t.id: t for t in tasks}
+    placed: set = set()
+    layers: List[List[CrewTask]] = []
+    remaining = list(tasks)
+
+    while remaining:
+        layer = [t for t in remaining if all(d in placed for d in t.depends_on)]
+        if not layer:
+            layer = remaining[:]  # cycle fallback
+        for t in layer:
+            placed.add(t.id)
+        remaining = [t for t in remaining if t.id not in placed]
+        layers.append(layer)
+    return layers
+
+
 class CrewRenderer:
-    """Renders crew execution progress to the console."""
+    """Renders crew execution as a real-time DAG flowchart."""
 
     def __init__(self, console: Console):
         self.console = console
         self._lock = threading.Lock()
+        self._event_log: List[str] = []
+        self._max_events = 6
+
+    def _log_event(self, markup_str: str) -> None:
+        self._event_log.append(markup_str)
+        if len(self._event_log) > self._max_events:
+            self._event_log = self._event_log[-self._max_events:]
+
+    # ── Decomposition: static task plan + DAG ──────────────
 
     def render_decomposition(self, tasks: List[CrewTask]) -> None:
-        """Show the task decomposition plan."""
+        """Show task plan table + DAG dependency graph."""
         table = Table(
             show_header=True,
             header_style=f"bold {THEME_ACCENT}",
@@ -67,96 +110,230 @@ class CrewRenderer:
                 deps,
             )
 
+        dag = self._build_static_dag(tasks)
+
         with self._lock:
             self.console.print(Panel(
-                table,
+                Group(table, Text(""), dag),
                 title=f"[bold {THEME_ACCENT}] Crew Task Plan [/bold {THEME_ACCENT}]",
                 title_align="left",
                 border_style=THEME_BORDER,
                 padding=(0, 1),
             ))
 
+    def _build_static_dag(self, tasks: List[CrewTask]) -> Text:
+        """Build a text DAG showing dependency flow and parallelism."""
+        layers = _topo_layers(tasks)
+        text = Text()
+        text.append("  Execution flow:  ", style=f"bold {THEME_DIM}")
+
+        for i, layer in enumerate(layers):
+            if i > 0:
+                text.append(" → ", style=THEME_DIM)
+            if len(layer) == 1:
+                t = layer[0]
+                color = _color_for_role(t.assigned_role)
+                text.append(f"{t.id}", style=f"bold {color}")
+            else:
+                text.append("[ ", style=THEME_ACCENT)
+                for j, t in enumerate(layer):
+                    if j > 0:
+                        text.append(" | ", style=THEME_DIM)
+                    color = _color_for_role(t.assigned_role)
+                    text.append(f"{t.id}", style=f"bold {color}")
+                text.append(" ]", style=THEME_ACCENT)
+
+        parallel_count = sum(1 for l in layers if len(l) > 1)
+        max_p = max((len(l) for l in layers), default=1)
+        hint = f"  ({len(layers)} stages"
+        if parallel_count > 0:
+            hint += f", up to {max_p}x parallel"
+        hint += ")"
+        text.append(hint, style=THEME_DIM)
+        return text
+
+    # ── Event logging (updates live display) ───────────────
+
     def render_task_start(self, task: CrewTask) -> None:
-        """Show that a task is starting, including worker instance if assigned."""
         color = _color_for_role(task.assigned_role)
-        icon = get_icon("▶")
-        worker_label = task.assigned_role
-        if task.assigned_worker and task.assigned_worker != task.assigned_role:
-            worker_label = task.assigned_worker
-        with self._lock:
-            self.console.print(
-                f"  [{color}]{icon} {worker_label}[/{color}] "
-                f"[{THEME_DIM}]starting: {task.description}[/{THEME_DIM}]"
-            )
+        worker = task.assigned_worker or task.assigned_role
+        self._log_event(
+            f"[{color}]{get_icon('▸')} {worker}[/{color}] "
+            f"[{THEME_DIM}]starting {task.id}[/{THEME_DIM}]"
+        )
 
     def render_task_done(self, result: TaskResult) -> None:
-        """Show task completion."""
         color = _color_for_role(result.role_name)
-        icon = get_icon("✓")
-        with self._lock:
-            self.console.print(
-                f"  [{THEME_SUCCESS}]{icon}[/{THEME_SUCCESS}] "
-                f"[{color}]{result.role_name}[/{color}] completed "
-                f"[{THEME_DIM}]({result.tokens_used:,} tokens, {result.elapsed_seconds:.1f}s)[/{THEME_DIM}]"
-            )
+        self._log_event(
+            f"[{THEME_SUCCESS}]{get_icon('✓')}[/{THEME_SUCCESS}] "
+            f"[{color}]{result.role_name}[/{color}] "
+            f"[{THEME_DIM}]{result.task_id} done "
+            f"({result.tokens_used:,}tok, {result.elapsed_seconds:.1f}s)[/{THEME_DIM}]"
+        )
 
     def render_task_failed(self, result: TaskResult) -> None:
-        """Show task failure."""
         color = _color_for_role(result.role_name)
-        icon = get_icon("✗")
-        with self._lock:
-            self.console.print(
-                f"  [{THEME_ERROR}]{icon}[/{THEME_ERROR}] "
-                f"[{color}]{result.role_name}[/{color}] failed: "
-                f"[{THEME_ERROR}]{result.error or 'unknown error'}[/{THEME_ERROR}]"
-            )
+        brief = (result.error or "unknown")[:60]
+        self._log_event(
+            f"[{THEME_ERROR}]{get_icon('✗')}[/{THEME_ERROR}] "
+            f"[{color}]{result.role_name}[/{color}] "
+            f"[{THEME_ERROR}]{result.task_id}: {brief}[/{THEME_ERROR}]"
+        )
 
     def render_task_skipped(self, task: CrewTask) -> None:
-        """Show task skipped due to upstream failure."""
-        color = _color_for_role(task.assigned_role)
-        icon = get_icon("⊘")
-        with self._lock:
-            self.console.print(
-                f"  [{THEME_DIM}]{icon} {task.assigned_role} skipped: {task.description}[/{THEME_DIM}]"
-            )
+        self._log_event(
+            f"[{THEME_DIM}]{get_icon('–')} {task.assigned_role} skipped {task.id}[/{THEME_DIM}]"
+        )
 
     def render_review_created(self, task_id: str) -> None:
-        """Show that a review has been requested for a task."""
-        icon = get_icon("⟳")
-        with self._lock:
-            self.console.print(
-                f"  [{THEME_INFO}]{icon} review requested[/{THEME_INFO}] "
-                f"[{THEME_DIM}]for task {task_id}[/{THEME_DIM}]"
-            )
+        self._log_event(
+            f"[{THEME_INFO}]{get_icon('⊙')} review[/{THEME_INFO}] "
+            f"[{THEME_DIM}]{task_id}[/{THEME_DIM}]"
+        )
 
     def render_review_passed(self, task_id: str) -> None:
-        """Show that a review passed."""
-        icon = get_icon("✓")
-        with self._lock:
-            self.console.print(
-                f"  [{THEME_SUCCESS}]{icon} review passed[/{THEME_SUCCESS}] "
-                f"[{THEME_DIM}]for task {task_id}[/{THEME_DIM}]"
-            )
+        self._log_event(
+            f"[{THEME_SUCCESS}]{get_icon('✓')} review passed[/{THEME_SUCCESS}] "
+            f"[{THEME_DIM}]{task_id}[/{THEME_DIM}]"
+        )
 
     def render_rework_requested(self, task_id: str, attempt: int) -> None:
-        """Show that rework has been requested."""
-        icon = get_icon("⟲")
-        with self._lock:
-            self.console.print(
-                f"  [{THEME_INFO}]{icon} rework #{attempt}[/{THEME_INFO}] "
-                f"[{THEME_DIM}]requested for task {task_id}[/{THEME_DIM}]"
-            )
+        self._log_event(
+            f"[{THEME_WARN}]{get_icon('⟲')} rework #{attempt}[/{THEME_WARN}] "
+            f"[{THEME_DIM}]{task_id}[/{THEME_DIM}]"
+        )
 
     def render_rework_limit(self, task_id: str) -> None:
-        """Show that rework limit was reached and output accepted as-is."""
-        icon = get_icon("⊘")
-        with self._lock:
-            self.console.print(
-                f"  [{THEME_DIM}]{icon} rework limit reached for task {task_id} — accepting current output[/{THEME_DIM}]"
-            )
+        self._log_event(
+            f"[{THEME_DIM}]{get_icon('–')} rework limit {task_id}[/{THEME_DIM}]"
+        )
+
+    # ── Live DAG flowchart (real-time progress) ────────────
+
+    def build_progress_display(
+        self,
+        tasks: List[CrewTask],
+        states: Dict[str, str],
+        start_times: Dict[str, float],
+        budget_used: int,
+        budget_max: int,
+    ) -> Panel:
+        """Build a real-time DAG flowchart panel.
+
+        Shows each task as a node in a vertical flowchart with:
+        - Status icon + color coding
+        - Live elapsed time for running tasks
+        - Fork/merge connectors for parallel tasks
+        - Progress bar and token budget
+        - Recent event log
+        """
+        now = time.monotonic()
+        layers = _topo_layers(tasks)
+        flow = Text()
+        done_count = 0
+        total_count = len(tasks)
+
+        for layer_idx, layer in enumerate(layers):
+            is_parallel = len(layer) > 1
+
+            # ── Draw connector from previous layer ──
+            if layer_idx > 0:
+                if is_parallel:
+                    # Fork: single line splits into multiple
+                    flow.append("       ┌", style=THEME_BORDER)
+                    flow.append("─" * 4, style=THEME_BORDER)
+                    for k in range(len(layer) - 1):
+                        flow.append("┬", style=THEME_BORDER)
+                        flow.append("─" * 16, style=THEME_BORDER)
+                    flow.append("┐\n", style=THEME_BORDER)
+                else:
+                    flow.append("       │\n", style=THEME_BORDER)
+
+            # ── Render each task node in this layer ──
+            for task_idx, task in enumerate(layer):
+                state_str = states.get(task.id, "pending")
+                icon_char, color, label = _STATE_DISPLAY.get(
+                    state_str, ("?", THEME_DIM, state_str))
+                icon = get_icon(icon_char)
+                role_color = _color_for_role(task.assigned_role)
+                worker = task.assigned_worker or task.assigned_role
+
+                # Determine time display
+                if state_str in ("assigned", "running", "in_review", "rework"):
+                    start = start_times.get(task.id)
+                    time_str = f"{now - start:.0f}s" if start else ""
+                elif state_str == "done":
+                    done_count += 1
+                    time_str = ""
+                elif state_str in ("failed", "skipped"):
+                    done_count += 1
+                    time_str = ""
+                else:
+                    time_str = ""
+
+                # Connector prefix
+                if is_parallel:
+                    if task_idx == 0:
+                        prefix = "  ├── "
+                    elif task_idx == len(layer) - 1:
+                        prefix = "  └── "
+                    else:
+                        prefix = "  ├── "
+                    flow.append(prefix, style=THEME_BORDER)
+                else:
+                    flow.append("  ", style="")
+
+                # Task node: [icon] task_id  role  status  time
+                flow.append(f" {icon} ", style=f"bold {color}")
+                flow.append(f"{task.id} ", style=f"bold {color}")
+                flow.append(f"{worker:<12} ", style=role_color)
+                flow.append(f"{label:<10}", style=color)
+                if time_str:
+                    flow.append(f" {time_str}", style=f"bold {THEME_INFO}")
+                flow.append("\n")
+
+            # ── Merge connector after parallel layer ──
+            if is_parallel and layer_idx < len(layers) - 1:
+                flow.append("       └", style=THEME_BORDER)
+                flow.append("─" * 4, style=THEME_BORDER)
+                for k in range(len(layer) - 1):
+                    flow.append("┴", style=THEME_BORDER)
+                    flow.append("─" * 16, style=THEME_BORDER)
+                flow.append("┘\n", style=THEME_BORDER)
+
+        # ── Progress bar ──
+        pct = int(done_count / total_count * 100) if total_count > 0 else 0
+        budget_pct = int(budget_used / budget_max * 100) if budget_max > 0 else 0
+        bar_w = 15
+        filled = int(bar_w * pct / 100)
+        bar = get_icon("●") * filled + get_icon("·") * (bar_w - filled)
+        bar_color = THEME_SUCCESS if pct >= 100 else (THEME_INFO if done_count > 0 else THEME_DIM)
+
+        progress = Text()
+        progress.append("\n  Progress: ", style=THEME_DIM)
+        progress.append(f"{bar} ", style=bar_color)
+        progress.append(f"{done_count}/{total_count}", style=f"bold {bar_color}")
+        progress.append(f"  |  Budget: {budget_used:,}/{budget_max:,} ({budget_pct}%)", style=THEME_DIM)
+
+        # ── Event log ──
+        events = Text()
+        if self._event_log:
+            events.append("\n")
+            for ev in self._event_log[-5:]:
+                events.append("\n  ")
+                events.append_text(Text.from_markup(ev))
+
+        return Panel(
+            Group(flow, progress, events),
+            title=f"[bold {THEME_ACCENT}] Crew Progress [/bold {THEME_ACCENT}]",
+            title_align="left",
+            border_style=THEME_BORDER,
+            padding=(0, 1),
+        )
+
+    # ── Final summary table ────────────────────────────────
 
     def render_summary(self, results: List[TaskResult], skipped: Optional[List[CrewTask]] = None) -> None:
-        """Render the final crew execution summary table."""
         table = Table(
             show_header=True,
             header_style=f"bold {THEME_ACCENT}",

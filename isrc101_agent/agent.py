@@ -171,7 +171,8 @@ class Agent:
                  display_file_tree: str = "auto",
                  quiet: bool = False,
                  config=None,
-                 iteration_hook: Optional[Callable] = None):
+                 iteration_hook: Optional[Callable] = None,
+                 auto_compact_threshold: int = 0):
         self.llm = llm
         self.tools = tools
         self.max_iterations = max_iterations
@@ -229,6 +230,8 @@ class Agent:
         self.conversation: List[Dict[str, Any]] = []
         self.total_tokens = 0
         self._files_modified = False
+        self._budget_exhausted = False  # soft flag for graceful budget stop
+        self.auto_compact_threshold = max(0, int(auto_compact_threshold))
         self.current_plan: Optional[Plan] = None
         self._web_cache_lock = threading.Lock()
         self._web_fetch_cache: Dict[str, str] = {}  # URL -> raw result (session-level)
@@ -495,8 +498,22 @@ class Agent:
         )
 
         for _ in range(self.max_iterations):
+            if self._budget_exhausted:
+                return "Token budget exhausted — results saved."
             if self.iteration_hook:
                 self.iteration_hook()
+
+            # Auto-compact when context usage exceeds threshold
+            if self.auto_compact_threshold > 0 and len(self.conversation) > 6:
+                ctx_info = self.get_context_info()
+                if ctx_info["pct"] >= self.auto_compact_threshold:
+                    compacted = self.compact_conversation()
+                    if compacted > 0:
+                        _log.info(
+                            "Auto-compacted %d messages (context was %d%%)",
+                            compacted, ctx_info["pct"],
+                        )
+
             system = self._compose_system_prompt(base_system, grounding_feedback)
             messages = self._prepare_messages(system)
             use_stream = not self._should_enforce_grounding()
@@ -898,6 +915,26 @@ class Agent:
             return None
         return Plan(title=title, steps=steps)
 
+    def get_context_info(self) -> Dict:
+        """Return detailed context window usage information."""
+        context_window = getattr(self.llm, "context_window", 128000)
+        conv_tokens = sum(self._estimate_message_tokens(m) for m in self.conversation)
+        budget = context_window - self.llm.max_tokens - 2000  # match prepare_messages safety margin
+        pct = int(conv_tokens / budget * 100) if budget > 0 else 0
+        remaining = max(0, budget - conv_tokens)
+        return {
+            "conv_tokens": conv_tokens,
+            "budget": budget,
+            "context_window": context_window,
+            "max_tokens": self.llm.max_tokens,
+            "pct": pct,
+            "remaining": remaining,
+            "messages": len(self.conversation),
+            "user_messages": sum(1 for m in self.conversation if m.get("role") == "user"),
+            "assistant_messages": sum(1 for m in self.conversation if m.get("role") == "assistant"),
+            "tool_messages": sum(1 for m in self.conversation if m.get("role") == "tool"),
+        }
+
     def get_stats(self) -> Dict:
         user_msgs = sum(1 for m in self.conversation if m.get("role") == "user")
         tool_calls = sum(len(m.get("tool_calls", []))
@@ -922,13 +959,22 @@ class Agent:
         }
 
     def compact_conversation(self) -> int:
-        """Compact old messages into a summary, keeping a safe recent suffix."""
+        """Compact old messages into an LLM-generated summary, keeping recent suffix.
+
+        Follows Claude Code's approach: passes the original conversation messages
+        directly to the LLM for summarization, preserving full conversation structure.
+        Falls back to mechanical truncation if the LLM call fails.
+        """
         keep_last = 4
         if len(self.conversation) <= keep_last:
             return 0
 
         split_index = len(self.conversation) - keep_last
         split_index = self._repair_tool_pairs_in_suffix(split_index)
+
+        # Clamp: repair may push split_index to len(conversation)
+        if split_index >= len(self.conversation):
+            split_index = len(self.conversation) - 1
 
         # Safe split starts at user, or assistant without tool calls.
         while split_index > 0 and not self._is_safe_split_message(self.conversation[split_index]):
@@ -939,7 +985,132 @@ class Agent:
 
         old_msgs = self.conversation[:split_index]
         kept = self.conversation[split_index:]
+        compacted_count = len(old_msgs)
 
+        summary_text = self._generate_llm_summary(old_msgs)
+
+        self.conversation = [
+            {"role": "user", "content": summary_text},
+            {"role": "assistant", "content": (
+                "I have the full context from our earlier conversation summarized above. "
+                "I'll continue from where we left off."
+            )},
+        ] + kept
+
+        self._ctx.invalidate_token_cache()
+        return compacted_count
+
+    def _generate_llm_summary(self, old_msgs: List[Dict[str, Any]]) -> str:
+        """Generate an LLM summary by passing original conversation messages directly.
+
+        Claude Code approach: the LLM sees the actual conversation structure
+        (user/assistant/tool turns) rather than a flattened transcript, producing
+        a higher-quality summary that preserves semantic relationships.
+
+        Falls back to mechanical truncation on failure.
+        """
+        # Build summarization messages: system prompt + original conversation + summarize request.
+        # Sanitize messages: strip tool_calls structure, keep only text content and tool names.
+        summarize_msgs: List[Dict[str, Any]] = []
+
+        summarize_system = {
+            "role": "system",
+            "content": (
+                "You are a conversation summarizer for a coding assistant session. "
+                "You will be shown a conversation between a user and an AI coding assistant. "
+                "Your job is to produce a comprehensive summary that will replace the original "
+                "messages to save context space.\n\n"
+                "The summary MUST preserve:\n"
+                "- Every distinct user request and the outcome\n"
+                "- All file paths that were read, created, modified, or deleted\n"
+                "- Key technical decisions, design choices, and their rationale\n"
+                "- Function names, class names, variable names that were discussed\n"
+                "- Current state: what is done, what is pending, what failed\n"
+                "- Any constraints, preferences, or instructions the user gave\n"
+                "- Error messages or issues encountered and how they were resolved\n\n"
+                "Format the summary as plain text with clear sections. "
+                "Be thorough — information not in the summary is permanently lost."
+            ),
+        }
+
+        # Pass the original conversation messages directly to the LLM.
+        # Sanitize: convert tool_calls to text descriptions, truncate huge tool results.
+        for msg in old_msgs:
+            role = msg.get("role", "unknown")
+            content = msg.get("content") or ""
+
+            if role == "user":
+                summarize_msgs.append({"role": "user", "content": content})
+
+            elif role == "assistant":
+                tc = msg.get("tool_calls")
+                if tc and isinstance(tc, list):
+                    # Convert tool calls to readable text
+                    tool_desc_parts = []
+                    for t in tc:
+                        func = t.get("function", {})
+                        name = func.get("name", "?")
+                        args_str = func.get("arguments", "{}")
+                        # Parse args to show key parameters concisely
+                        try:
+                            args = json.loads(args_str) if isinstance(args_str, str) else args_str
+                            if isinstance(args, dict):
+                                # Show most relevant arg (path, command, query, etc.)
+                                key_args = {k: v for k, v in args.items()
+                                            if k in ("path", "command", "pattern", "url", "query", "content", "old_str", "new_str", "task")}
+                                for k, v in key_args.items():
+                                    if isinstance(v, str) and len(v) > 200:
+                                        key_args[k] = v[:200] + "..."
+                                arg_summary = ", ".join(f"{k}={v!r}" for k, v in key_args.items())
+                            else:
+                                arg_summary = str(args)[:200]
+                        except Exception:
+                            arg_summary = args_str[:200] if isinstance(args_str, str) else ""
+                        tool_desc_parts.append(f"  {name}({arg_summary})")
+
+                    tool_text = "Called tools:\n" + "\n".join(tool_desc_parts)
+                    combined = f"{content}\n{tool_text}" if content else tool_text
+                    summarize_msgs.append({"role": "assistant", "content": combined})
+                elif content:
+                    summarize_msgs.append({"role": "assistant", "content": content})
+
+            elif role == "tool":
+                # Tool results can be very large — truncate but keep enough for context
+                truncated = content[:1000] + "..." if len(content) > 1000 else content
+                # Convert tool message to user message (tool role not valid in summarization context)
+                summarize_msgs.append({"role": "user", "content": f"[Tool result]: {truncated}"})
+
+        # Final instruction to generate the summary
+        summarize_msgs.append({
+            "role": "user",
+            "content": (
+                "Now produce a comprehensive summary of the entire conversation above. "
+                "This summary will replace all the messages you just saw, so make sure "
+                "nothing important is lost. Write in the same language the user used."
+            ),
+        })
+
+        try:
+            response = self.llm.chat(
+                messages=[summarize_system] + summarize_msgs,
+                tools=None,
+            )
+            if response.content and len(response.content.strip()) > 50:
+                if response.usage:
+                    self.total_tokens += response.usage.get("total_tokens", 0)
+                return (
+                    "[Conversation compacted — LLM-generated summary of earlier messages]\n\n"
+                    + response.content.strip()
+                )
+        except Exception as e:
+            _log.warning("LLM summary failed, falling back to mechanical: %s", e)
+
+        # Fallback: mechanical truncation
+        return self._mechanical_summary(old_msgs)
+
+    @staticmethod
+    def _mechanical_summary(old_msgs: List[Dict[str, Any]]) -> str:
+        """Fallback: mechanical string truncation summary."""
         summary_parts = []
         for msg in old_msgs:
             role = msg.get("role", "?")
@@ -949,30 +1120,21 @@ class Agent:
             elif role == "assistant":
                 tc = msg.get("tool_calls")
                 if tc:
-                    names = [t["function"]["name"] for t in tc] if isinstance(tc, list) else []
+                    names = [t.get("function", {}).get("name", "?") for t in tc] if isinstance(tc, list) else []
                     summary_parts.append(f"Assistant: called {', '.join(names)}")
                 elif content:
                     summary_parts.append(f"Assistant: {content}")
             elif role == "tool":
                 summary_parts.append(f"Tool result: {content[:100]}")
-
-        summary_text = (
+        return (
             "[Conversation summary — earlier messages compacted]\n"
             + "\n".join(summary_parts)
         )
-        compacted_count = len(old_msgs)
-
-        self.conversation = [
-            {"role": "user", "content": summary_text},
-            {"role": "assistant", "content": "Understood. I have the context from our earlier conversation. How can I continue helping?"},
-        ] + kept
-
-        self._ctx.invalidate_token_cache()
-        return compacted_count
 
     def reset(self):
         self.conversation.clear()
         self.total_tokens = 0
+        self._budget_exhausted = False
         self._grounding.reset_turn()
         with self._web_cache_lock:
             self._web_fetch_cache.clear()

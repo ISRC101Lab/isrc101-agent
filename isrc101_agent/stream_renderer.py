@@ -8,7 +8,7 @@ from rich.console import Console
 from rich.status import Status
 
 from .theme import ACCENT, DIM, WARN, SEPARATOR
-from .rendering import get_icon
+from .rendering import get_icon, strip_markdown
 
 __all__ = ["render_stream"]
 
@@ -50,17 +50,14 @@ def render_stream(
     thinking_status: Optional[Status] = None
     reasoning_start_time: Optional[float] = None
     reasoning_token_count = 0
+    _line_buffer = ""  # buffer for line-level markdown stripping
 
     # ── Helpers ──────────────────────────────────
 
-    def _write(chunk: str) -> None:
-        """Write a text chunk directly to the underlying stream."""
-        nonlocal text_started
+    def _write_raw(chunk: str) -> None:
+        """Write a text chunk directly to the underlying stream (no processing)."""
         if not chunk:
             return
-        if not text_started:
-            console.print()  # blank line before first output
-            text_started = True
         stream = getattr(console, "file", None)
         if stream is not None and hasattr(stream, "write"):
             stream.write(chunk)
@@ -68,6 +65,27 @@ def render_stream(
                 stream.flush()
             return
         console.print(chunk, end="", markup=False, highlight=False, soft_wrap=True)
+
+    def _write(chunk: str) -> None:
+        """Buffer incoming text and flush complete lines with markdown stripped."""
+        nonlocal text_started, _line_buffer
+        if not chunk:
+            return
+        if not text_started:
+            console.print()  # blank line before first output
+            text_started = True
+        _line_buffer += chunk
+        # Flush all complete lines (strip markdown per line)
+        while "\n" in _line_buffer:
+            line, _line_buffer = _line_buffer.split("\n", 1)
+            _write_raw(strip_markdown(line) + "\n")
+
+    def _flush_line_buffer() -> None:
+        """Flush any remaining partial line in the buffer."""
+        nonlocal _line_buffer
+        if _line_buffer:
+            _write_raw(strip_markdown(_line_buffer))
+            _line_buffer = ""
 
     def _stop_thinking() -> None:
         nonlocal thinking_status
@@ -165,6 +183,7 @@ def render_stream(
         _stop_thinking()
         if text_started:
             _flush_reasoning_buffer()
+            _flush_line_buffer()
             console.print()  # trailing newline
 
         # Show reasoning summary statistics and separator

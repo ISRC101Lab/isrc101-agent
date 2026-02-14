@@ -8,6 +8,7 @@ from typing import Callable
 
 from rich.console import Console
 from rich.panel import Panel
+from rich.status import Status
 from rich.table import Table
 
 from .agent import Agent
@@ -862,13 +863,80 @@ def _cmd_stats(ctx: CommandContext, args: list[str]) -> str:
     return ""
 
 
+def _render_context_bar(console, info: dict, label: str = "Context") -> None:
+    """Render a visual context usage bar."""
+    pct = info["pct"]
+    conv_tokens = info["conv_tokens"]
+    budget = info["budget"]
+    remaining = info["remaining"]
+    messages = info["messages"]
+
+    # Color based on usage level
+    if pct >= 90:
+        bar_color = THEME_ERROR
+        level = "CRITICAL"
+    elif pct >= 70:
+        bar_color = THEME_WARN
+        level = "HIGH"
+    elif pct >= 50:
+        bar_color = THEME_INFO
+        level = "MODERATE"
+    else:
+        bar_color = THEME_SUCCESS
+        level = "OK"
+
+    # Build progress bar (20 chars wide)
+    bar_width = 20
+    filled = int(bar_width * min(pct, 100) / 100)
+    empty = bar_width - filled
+    bar = get_icon("●") * filled + get_icon("·") * empty
+
+    console.print(f"  [{THEME_DIM}]{label}:[/{THEME_DIM}] [{bar_color}]{bar}[/{bar_color}] [{bar_color}]{pct}%[/{bar_color}] [{THEME_DIM}]({level})[/{THEME_DIM}]")
+    console.print(f"  [{THEME_DIM}]~{conv_tokens:,} / {budget:,} tokens  |  {remaining:,} remaining  |  {messages} messages[/{THEME_DIM}]")
+
+
 def _cmd_compact(ctx: CommandContext, args: list[str]) -> str:
     _ = args
-    count = ctx.agent.compact_conversation()
+
+    # Show context info before compaction
+    before = ctx.agent.get_context_info()
+    ctx.console.print()
+    _render_context_bar(ctx.console, before, "Before")
+
+    # Run compact with a spinner (LLM summarization can take a few seconds)
+    with Status(f"  [{THEME_DIM}]Generating summary via LLM...[/{THEME_DIM}]",
+                console=ctx.console, spinner="dots", spinner_style=THEME_ACCENT):
+        count = ctx.agent.compact_conversation()
+
     if count > 0:
-        ctx.console.print(f"  [{THEME_SUCCESS}]✓ Compacted {count} old messages into summary[/{THEME_SUCCESS}]")
+        after = ctx.agent.get_context_info()
+        saved = before["conv_tokens"] - after["conv_tokens"]
+        ctx.console.print()
+        ctx.console.print(f"  [{THEME_SUCCESS}]{get_icon('✓')} Compacted {count} messages (saved ~{saved:,} tokens)[/{THEME_SUCCESS}]")
+        ctx.console.print()
+        _render_context_bar(ctx.console, after, "After ")
     else:
-        ctx.console.print(f"  [{THEME_DIM}]Nothing to compact (≤4 messages)[/{THEME_DIM}]")
+        ctx.console.print(f"  [{THEME_DIM}]Nothing to compact ({get_icon('≡')} {before['messages']} messages, minimum 5 needed)[/{THEME_DIM}]")
+    return ""
+
+
+def _cmd_context(ctx: CommandContext, args: list[str]) -> str:
+    """Show current context window usage."""
+    _ = args
+    info = ctx.agent.get_context_info()
+    ctx.console.print()
+    _render_context_bar(ctx.console, info, "Context")
+    ctx.console.print()
+    ctx.console.print(f"  [{THEME_DIM}]Window: {info['context_window']:,}  |  "
+                      f"Output reserve: {info['max_tokens']:,}  |  "
+                      f"User: {info['user_messages']}  |  "
+                      f"Assistant: {info['assistant_messages']}  |  "
+                      f"Tool: {info['tool_messages']}[/{THEME_DIM}]")
+
+    pct = info["pct"]
+    if pct >= 70:
+        ctx.console.print()
+        ctx.console.print(f"  [{THEME_WARN}]Tip: run /compact to free context space[/{THEME_WARN}]")
     return ""
 
 
@@ -1310,16 +1378,6 @@ def _cmd_theme(ctx: CommandContext, args: list[str]) -> str:
     return ""
 
 
-def _cmd_crew(ctx: CommandContext, args: list[str]) -> str:
-    from .crew import Crew
-    crew = Crew(ctx.config, ctx.console)
-    result = crew.run(" ".join(args))
-    if result:
-        from .rendering import render_assistant_message
-        render_assistant_message(ctx.console, result)
-    return ""
-
-
 COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "/quit": _cmd_quit,
     "/help": _cmd_help,
@@ -1332,6 +1390,7 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "/config": _cmd_config,
     "/stats": _cmd_stats,
     "/compact": _cmd_compact,
+    "/context": _cmd_context,
     "/git": _cmd_git,
     "/undo": _cmd_undo,
     "/web": _cmd_web,
@@ -1341,5 +1400,4 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "/plan": _cmd_plan,
     "/reset": _cmd_reset,
     "/theme": _cmd_theme,
-    "/crew": _cmd_crew,
 }

@@ -69,14 +69,14 @@ SLASH_COMMAND_SPECS: tuple[SlashCommandSpec, ...] = (
     SlashCommandSpec("/sessions", "/sessions [list|timeline|export|tag|tags|search]",
                      "Enhanced session management: list, timeline, export, tagging, search",
                      ("session", "history", "save", "export", "timeline")),
-    SlashCommandSpec("/compact",  "/compact",     "Summarize conversation history to free up context", ("context", "tokens")),
+    SlashCommandSpec("/compact",  "/compact",     "Compress conversation history to free context space", ("context", "tokens", "compress")),
+    SlashCommandSpec("/context",  "/context",     "Show context window usage and token budget", ("tokens", "usage", "window")),
     SlashCommandSpec("/undo",     "/undo",        "Revert the last file change made by the agent", ("revert", "rollback")),
     SlashCommandSpec("/diff",     "/diff",        "Show uncommitted changes as a unified diff", ("git", "changes", "patch")),
     SlashCommandSpec("/config",   "/config [key|set|reset|diff]", "Manage configuration settings interactively", ("settings", "preferences", "customize")),
     SlashCommandSpec("/stats",    "/stats",       "Show token usage and cost for this session", ("tokens", "usage", "cost")),
     SlashCommandSpec("/git",      "/git",         "Show git branch, status, and recent commits", ("branch", "commit", "status")),
     SlashCommandSpec("/reset",    "/reset",       "Clear conversation history and start fresh", ("clear", "conversation")),
-    SlashCommandSpec("/crew",     "/crew <task>",  "Run a multi-agent crew to collaboratively complete a task", ("multi", "agent", "parallel", "team")),
     SlashCommandSpec("/quit",     "/quit",        "Exit the session (auto-saves conversation)", ("exit",)),
 )
 

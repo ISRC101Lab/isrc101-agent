@@ -82,6 +82,31 @@ def get_icon(unicode_icon: str) -> str:
 # Pattern to match fenced code blocks: ```language\ncode\n```
 
 
+# ── Markdown stripping for plain text output ──
+
+_MD_BOLD_RE = re.compile(r'\*\*(.+?)\*\*')
+_MD_ITALIC_RE = re.compile(r'(?<!\*)\*([^*\n]+?)\*(?!\*)')
+_MD_INLINE_CODE_RE = re.compile(r'`([^`\n]+?)`')
+_MD_HEADER_RE = re.compile(r'^#{1,6}\s+', re.MULTILINE)
+_MD_BLOCKQUOTE_RE = re.compile(r'^>\s?', re.MULTILINE)
+_MD_FENCE_RE = re.compile(r'^```\w*\s*$', re.MULTILINE)
+_MD_HR_RE = re.compile(r'^---+\s*$', re.MULTILINE)
+_MD_LINK_RE = re.compile(r'\[([^\]]+)\]\([^)]+\)')
+
+
+def strip_markdown(text: str) -> str:
+    """Strip common markdown formatting from text, keeping content."""
+    text = _MD_BOLD_RE.sub(r'\1', text)
+    text = _MD_ITALIC_RE.sub(r'\1', text)
+    text = _MD_INLINE_CODE_RE.sub(r'\1', text)
+    text = _MD_HEADER_RE.sub('', text)
+    text = _MD_BLOCKQUOTE_RE.sub('', text)
+    text = _MD_FENCE_RE.sub('', text)
+    text = _MD_HR_RE.sub('', text)
+    text = _MD_LINK_RE.sub(r'\1', text)
+    return text
+
+
 
 # ── Adaptive truncation based on terminal size ──
 
@@ -297,7 +322,7 @@ def render_assistant_message(console: Console, content: str):
     console.print()
     if not content.strip():
         return
-    console.print(content, markup=False, highlight=False)
+    console.print(strip_markdown(content), markup=False, highlight=False)
 
 
 def render_tool_call(console: Console, name, args, index=None, total=None):

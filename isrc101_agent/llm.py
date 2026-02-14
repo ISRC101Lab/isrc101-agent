@@ -459,6 +459,8 @@ class LLMAdapter:
                     if getattr(delta, "tool_calls", None):
                         for tc_delta in delta.tool_calls:
                             idx = tc_delta.index
+                            if idx is None:
+                                continue
                             if idx not in tc_data:
                                 tc_data[idx] = {"id": "", "name": "", "args": []}
                             if tc_delta.id:

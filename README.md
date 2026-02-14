@@ -38,6 +38,7 @@
 
 ## 快速开始
 
+### 方法一：使用安装包（推荐）
 ```bash
 git clone https://github.com/ISRC101Lab/isrc101-agent.git
 cd isrc101-agent
@@ -45,6 +46,24 @@ bash setup.sh               # 一键安装（虚拟环境 + 依赖 + 配置）
 source .venv/bin/activate
 cd /path/to/your/project
 isrc run
+```
+
+### 方法二：直接运行（无需安装）
+```bash
+git clone https://github.com/ISRC101Lab/isrc101-agent.git
+cd isrc101-agent
+python main.py run          # 使用项目根目录的main.py
+# 或者
+python run.py               # 使用便捷启动脚本
+```
+
+### 方法三：单次查询
+```bash
+# 使用安装包
+isrc ask "帮我分析这个Python代码"
+
+# 直接运行
+python main.py ask "帮我分析这个Python代码"
 ```
 
 ## 核心特性

@@ -7,6 +7,7 @@ from collections import Counter
 from typing import Dict, List, Optional, Set
 
 from rich.console import Console
+from rich.live import Live
 
 from ..config import Config
 from ..llm import LLMAdapter, build_system_prompt
@@ -300,36 +301,65 @@ class Coordinator:
 
     # ── Event loop ────────────────────────────────────────────
 
+    def _get_task_states(self) -> Dict[str, str]:
+        """Snapshot current task states as simple strings for rendering."""
+        return {
+            task_id: (self.board.get_state(task_id) or TaskState.PENDING).value
+            for task_id in [t.id for t in self.board.get_all_tasks()]
+        }
+
+    def _build_live_display(self):
+        """Build the live progress panel from current board state."""
+        return self.renderer.build_progress_display(
+            tasks=self.board.get_all_tasks(),
+            states=self._get_task_states(),
+            start_times=self._task_start_times,
+            budget_used=self.budget.used,
+            budget_max=self.budget.max_tokens,
+        )
+
     def _event_loop(self):
-        """Main loop: dispatch ready tasks, process incoming messages."""
+        """Main loop: dispatch ready tasks, process messages, show live progress."""
         self._dispatch_ready_tasks()
 
-        while not self.board.all_resolved():
-            if self.budget.is_exhausted():
-                self.console.print(
-                    f"  [yellow]Token budget exhausted "
-                    f"({self.budget.used:,}/{self.budget.max_tokens:,}). "
-                    f"Stopping.[/yellow]"
-                )
-                break
+        # Use Rich Live for real-time progress dashboard.
+        # Short recv timeout (1.5s) ensures the display refreshes frequently
+        # even when no messages arrive.
+        with Live(
+            self._build_live_display(),
+            console=self.console,
+            refresh_per_second=2,
+            transient=True,  # Clear live display when done
+        ) as live:
+            while not self.board.all_resolved():
+                if self.budget.is_exhausted():
+                    self.renderer._log_event(
+                        f"[yellow]Budget exhausted "
+                        f"({self.budget.used:,}/{self.budget.max_tokens:,})[/yellow]"
+                    )
+                    live.update(self._build_live_display())
+                    break
 
-            msg = self.bus.coordinator_recv(timeout=self.message_timeout)
-            if msg is None:
-                self._check_task_timeouts()
-                continue
+                # Short timeout for responsive UI updates
+                msg = self.bus.coordinator_recv(timeout=1.5)
+                if msg is None:
+                    self._check_task_timeouts()
+                    live.update(self._build_live_display())
+                    continue
 
-            if msg.type == MessageType.TASK_COMPLETE:
-                self._on_task_complete(msg)
-            elif msg.type == MessageType.TASK_FAILED:
-                self._on_task_failed(msg)
-            elif msg.type == MessageType.REVIEW_PASSED:
-                self._on_review_passed(msg)
-            elif msg.type == MessageType.REWORK_NEEDED:
-                self._on_rework_needed(msg)
-            elif msg.type == MessageType.STATUS_UPDATE:
-                pass
+                if msg.type == MessageType.TASK_COMPLETE:
+                    self._on_task_complete(msg)
+                elif msg.type == MessageType.TASK_FAILED:
+                    self._on_task_failed(msg)
+                elif msg.type == MessageType.REVIEW_PASSED:
+                    self._on_review_passed(msg)
+                elif msg.type == MessageType.REWORK_NEEDED:
+                    self._on_rework_needed(msg)
+                elif msg.type == MessageType.STATUS_UPDATE:
+                    pass
 
-            self._dispatch_ready_tasks()
+                self._dispatch_ready_tasks()
+                live.update(self._build_live_display())
 
     def _dispatch_ready_tasks(self):
         """Assign ready tasks to idle worker instances of the matching role."""
