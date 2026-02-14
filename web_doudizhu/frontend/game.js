@@ -108,7 +108,7 @@ class DouDizhuGame {
      * 连接到游戏服务器
      */
     async connectToGame() {
-        const playerName = document.getElementById('player-name')?.value?.trim() || 'Player';
+        const playerName = document.getElementById('player-name')?.value?.trim() || '玩家';
         if (!playerName) {
             this.showMessage('请输入玩家名称', 'error');
             return;
@@ -407,7 +407,7 @@ class DouDizhuGame {
         
         if (nameElem) nameElem.textContent = player.name;
         if (roleElem) roleElem.textContent = player.role || '农民';
-        if (cardsElem) cardsElem.textContent = `${player.card_count || 0} cards`;
+        if (cardsElem) cardsElem.textContent = `${player.card_count || 0} 张牌`;
         
         // 更新回合指示器
         if (turnElem && this.gameState) {

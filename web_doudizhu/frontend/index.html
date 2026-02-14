@@ -1,14 +1,14 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dou Dizhu - Chinese Card Game</title>
+    <title>QQ斗地主 - 经典扑克游戏</title>
     <link rel="icon" href="/static/images/logo.svg" type="image/svg+xml">
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="/frontend/style.css?v=1.0.1">
+    <link rel="stylesheet" href="/frontend/style.css?v=1.1.0">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
 <body>
@@ -17,93 +17,93 @@
         <div id="login-panel" class="panel login-panel">
             <div class="panel-content">
                 <div class="login-header">
-                    <h1><i class="fas fa-crown"></i> Dou Dizhu</h1>
-                    <p class="subtitle">Traditional Chinese Card Game</p>
+                    <h1><i class="fas fa-crown"></i> QQ斗地主</h1>
+                    <p class="subtitle">经典扑克游戏</p>
                 </div>
                 
                 <div class="login-form">
                     <div class="form-group">
                         <label for="player-name">
-                            <i class="fas fa-user"></i> Player Name
+                            <i class="fas fa-user"></i> 玩家名称
                         </label>
-                        <input type="text" id="player-name" placeholder="Enter your name" value="Player">
+                        <input type="text" id="player-name" placeholder="输入你的名字" value="玩家">
                     </div>
                     
                     <div class="form-group">
                         <label for="room-name">
-                            <i class="fas fa-door-open"></i> Room Name (Optional)
+                            <i class="fas fa-door-open"></i> 房间名称 (可选)
                         </label>
-                        <input type="text" id="room-name" placeholder="Enter room name">
+                        <input type="text" id="room-name" placeholder="输入房间名称">
                     </div>
                     
                     <div class="form-actions">
                         <button id="connect-btn" class="btn btn-primary btn-large">
-                            <i class="fas fa-plug"></i> Connect to Server
+                            <i class="fas fa-plug"></i> 连接到服务器
                         </button>
                     </div>
                     
                     <div class="connection-status" id="connection-status">
-                        <i class="fas fa-circle"></i> Disconnected
+                        <i class="fas fa-circle"></i> 已断开
                     </div>
                 </div>
                 
                 <div class="game-info">
-                    <h3><i class="fas fa-info-circle"></i> How to Play</h3>
+                    <h3><i class="fas fa-info-circle"></i> 游戏规则</h3>
                     <ul>
-                        <li>3 players total (1 human + 2 AI)</li>
-                        <li>Bid to become the Landlord</li>
-                        <li>Landlord gets 3 extra cards</li>
-                        <li>Play cards in turns, following patterns</li>
-                        <li>First to play all cards wins!</li>
+                        <li>3名玩家 (1名真人 + 2名AI)</li>
+                        <li>叫地主竞拍地主身份</li>
+                        <li>地主获得3张底牌</li>
+                        <li>按顺序出牌，必须符合牌型规则</li>
+                        <li>最先出完所有牌的玩家获胜！</li>
                     </ul>
                 </div>
             </div>
         </div>
         
-        <!-- Lobby Panel (Initially hidden) -->
+        <!-- 游戏大厅 (初始隐藏) -->
         <div id="lobby-panel" class="panel lobby-panel hidden">
             <div class="panel-content">
                 <div class="lobby-header">
-                    <h2><i class="fas fa-home"></i> Game Lobby</h2>
-                    <p>Welcome, <span id="lobby-player-name">Player</span>!</p>
+                    <h2><i class="fas fa-home"></i> 游戏大厅</h2>
+                    <p>欢迎, <span id="lobby-player-name">玩家</span>!</p>
                 </div>
                 
                 <div class="lobby-actions">
                     <div class="form-group">
                         <label for="create-room-name">
-                            <i class="fas fa-plus-circle"></i> Create New Room
+                            <i class="fas fa-plus-circle"></i> 创建新房间
                         </label>
                         <div class="input-with-button">
-                            <input type="text" id="create-room-name" placeholder="Room name (optional)">
+                            <input type="text" id="create-room-name" placeholder="房间名称 (可选)">
                             <button id="create-room-btn" class="btn btn-primary">
-                                <i class="fas fa-plus"></i> Create
+                                <i class="fas fa-plus"></i> 创建
                             </button>
                         </div>
                     </div>
                     
                     <div class="form-group">
                         <label for="join-room-id">
-                            <i class="fas fa-sign-in-alt"></i> Join Existing Room
+                            <i class="fas fa-sign-in-alt"></i> 加入现有房间
                         </label>
                         <div class="input-with-button">
-                            <input type="text" id="join-room-id" placeholder="Enter room ID">
+                            <input type="text" id="join-room-id" placeholder="输入房间ID">
                             <button id="join-room-btn" class="btn btn-secondary">
-                                <i class="fas fa-sign-in-alt"></i> Join
+                                <i class="fas fa-sign-in-alt"></i> 加入
                             </button>
                         </div>
                     </div>
                 </div>
                 
                 <div class="available-rooms">
-                    <h3><i class="fas fa-list"></i> Available Rooms</h3>
+                    <h3><i class="fas fa-list"></i> 可用房间</h3>
                     <div class="rooms-list" id="rooms-list">
-                        <div class="empty-rooms">No rooms available. Create one!</div>
+                        <div class="empty-rooms">暂无可用房间，请创建一个！</div>
                     </div>
                 </div>
                 
                 <div class="lobby-footer">
                     <button id="back-to-login-btn" class="btn btn-outline">
-                        <i class="fas fa-arrow-left"></i> Back to Login
+                        <i class="fas fa-arrow-left"></i> 返回登录
                     </button>
                 </div>
             </div>
@@ -111,14 +111,14 @@
         
         <!-- Game Room (Initially hidden) -->
         <div id="game-room" class="game-room hidden">
-            <!-- Game Header -->
+            <!-- 游戏头部 -->
             <header class="game-header">
-                <h1><i class="fas fa-crown"></i> Dou Dizhu</h1>
+                <h1><i class="fas fa-crown"></i> QQ斗地主</h1>
                 <div class="game-info">
-                    <span class="room-id" id="room-id-display">Room: #---</span>
-                    <span class="players-online" id="players-online">Players: 1/3</span>
+                    <span class="room-id" id="room-id-display">房间: #---</span>
+                    <span class="players-online" id="players-online">玩家: 1/3</span>
                     <span class="connection-status" id="game-connection-status">
-                        <i class="fas fa-circle"></i> Connected
+                        <i class="fas fa-circle"></i> 已连接
                     </span>
                     <button class="btn btn-small" id="fullscreen-toggle">
                         <i class="fas fa-expand"></i>
@@ -128,63 +128,63 @@
 
             <!-- Main Game Area -->
             <main class="game-main">
-                <!-- Status Panel -->
+                <!-- 状态面板 -->
                 <div class="status-panel">
                     <div class="game-status">
-                        <h3><i class="fas fa-info-circle"></i> Game Status</h3>
+                        <h3><i class="fas fa-info-circle"></i> 游戏状态</h3>
                         <div class="status-content">
                             <div class="status-item">
-                                <span class="status-label">Round:</span>
+                                <span class="status-label">回合:</span>
                                 <span class="status-value" id="round-number">1</span>
                             </div>
                             <div class="status-item">
-                                <span class="status-label">Turn:</span>
-                                <span class="status-value" id="current-player">Player 1</span>
+                                <span class="status-label">当前玩家:</span>
+                                <span class="status-value" id="current-player">玩家1</span>
                             </div>
                             <div class="status-item">
-                                <span class="status-label">Phase:</span>
-                                <span class="status-value" id="game-phase">Bidding</span>
+                                <span class="status-label">阶段:</span>
+                                <span class="status-value" id="game-phase">叫地主</span>
                             </div>
                             <div class="status-item">
-                                <span class="status-label">Landlord:</span>
-                                <span class="status-value" id="landlord-player">None</span>
+                                <span class="status-label">地主:</span>
+                                <span class="status-value" id="landlord-player">无</span>
                             </div>
                             <div class="status-item">
-                                <span class="status-label">Score:</span>
+                                <span class="status-label">分数:</span>
                                 <span class="status-value" id="game-score">0 - 0</span>
                             </div>
                         </div>
                     </div>
 
                     <div class="action-log">
-                        <h3><i class="fas fa-history"></i> Action Log</h3>
+                        <h3><i class="fas fa-history"></i> 操作日志</h3>
                         <div class="log-content" id="action-log">
-                            <div class="log-entry">Welcome to Dou Dizhu!</div>
+                            <div class="log-entry">欢迎来到斗地主！</div>
                         </div>
                     </div>
 
                     <div class="player-stats">
-                        <h3><i class="fas fa-chart-bar"></i> Player Stats</h3>
+                        <h3><i class="fas fa-chart-bar"></i> 玩家统计</h3>
                         <div class="stats-content" id="player-stats">
-                            <!-- Player stats will be dynamically added here -->
+                            <!-- 玩家统计数据将动态添加 -->
                         </div>
                     </div>
                 </div>
 
                 <!-- Game Table -->
                 <div class="game-table">
-                    <!-- Opponent Players (Top and Sides) -->
+                    <!-- 对手玩家 (上方和左侧) -->
                     <div class="player-area player-top" data-player="1">
                         <div class="player-info">
                             <div class="player-avatar">
                                 <i class="fas fa-robot"></i>
                             </div>
                             <div class="player-details">
-                                <span class="player-name" id="top-player-name">AI Player 1</span>
-                                <span class="player-role" id="top-player-role">Farmer</span>
+                                <span class="player-name" id="top-player-name">AI玩家1</span>
+                                <span class="player-role" id="top-player-role">农民</span>
                             </div>
                             <div class="player-status">
-                                <span class="cards-count" id="top-player-cards">17 cards</span>
+                                <span class="cards-count" id="top-player-cards">17张牌</span>
                                 <div class="player-turn-indicator" id="top-player-turn"></div>
                             </div>
                         </div>
@@ -196,11 +196,11 @@
                                 <i class="fas fa-robot"></i>
                             </div>
                             <div class="player-details">
-                                <span class="player-name" id="left-player-name">AI Player 2</span>
-                                <span class="player-role" id="left-player-role">Farmer</span>
+                                <span class="player-name" id="left-player-name">AI玩家2</span>
+                                <span class="player-role" id="left-player-role">农民</span>
                             </div>
                             <div class="player-status">
-                                <span class="cards-count" id="left-player-cards">17 cards</span>
+                                <span class="cards-count" id="left-player-cards">17张牌</span>
                                 <div class="player-turn-indicator" id="left-player-turn"></div>
                             </div>
                         </div>
@@ -210,109 +210,109 @@
                         <div class="deck-area">
                             <div class="deck" id="main-deck">
                                 <div class="deck-count">20</div>
-                                <div class="deck-label">Deck</div>
+                                <div class="deck-label">牌堆</div>
                             </div>
                             <div class="landlord-cards" id="landlord-cards">
-                                <div class="landlord-label">Landlord Cards</div>
+                                <div class="landlord-label">地主牌</div>
                                 <div class="cards-container">
-                                    <!-- 3 landlord cards will appear here -->
+                                    <!-- 3张地主牌将在这里显示 -->
                                 </div>
                             </div>
                         </div>
 
                         <div class="play-area">
                             <div class="current-play" id="current-play">
-                                <div class="play-label">Current Play</div>
+                                <div class="play-label">当前出牌</div>
                                 <div class="played-cards" id="played-cards">
-                                    <!-- Last played cards will appear here -->
+                                    <!-- 最后出的牌将在这里显示 -->
                                 </div>
                             </div>
                         </div>
                     </div>
 
-                    <!-- Current Player Area (Bottom) -->
+                    <!-- 当前玩家区域 (底部) -->
                     <div class="player-area player-bottom current-player" data-player="0">
                         <div class="player-info">
                             <div class="player-avatar">
                                 <i class="fas fa-user"></i>
                             </div>
                             <div class="player-details">
-                                <span class="player-name" id="bottom-player-name">You</span>
-                                <span class="player-role" id="bottom-player-role">Farmer</span>
+                                <span class="player-name" id="bottom-player-name">您</span>
+                                <span class="player-role" id="bottom-player-role">农民</span>
                             </div>
                             <div class="player-status">
-                                <span class="cards-count" id="bottom-player-cards">17 cards</span>
+                                <span class="cards-count" id="bottom-player-cards">17张牌</span>
                                 <div class="player-turn-indicator active" id="bottom-player-turn"></div>
                             </div>
                         </div>
                         
-                        <!-- Hand Card Display -->
+                        <!-- 手牌显示区域 -->
                         <div class="hand-display" id="hand-display">
-                            <div class="hand-instruction">Select cards from your hand to play</div>
+                            <div class="hand-instruction">从您的手牌中选择要出的牌</div>
                             <div class="cards-container" id="cards-container">
-                                <!-- Cards will be dynamically added here -->
+                                <!-- 牌将动态添加在这里 -->
                             </div>
                         </div>
 
                         <!-- Action Buttons -->
                         <div class="action-buttons">
-                            <!-- Bidding Panel (visible during bidding phase) -->
+                            <!-- 叫地主面板 (叫地主阶段可见) -->
                             <div id="bidding-panel" class="action-panel">
-                                <div class="panel-title">Bidding Phase</div>
+                                <div class="panel-title">叫地主阶段</div>
                                 <div class="button-group bidding-buttons" id="bid-options">
                                     <button class="btn btn-primary" id="call-landlord-btn">
-                                        <i class="fas fa-crown"></i> Call Landlord (1x)
+                                        <i class="fas fa-crown"></i> 叫地主 (1倍)
                                     </button>
                                     <button class="btn btn-secondary" id="bid-2x-btn">
-                                        <i class="fas fa-crown"></i> Bid 2x
+                                        <i class="fas fa-crown"></i> 抢地主 (2倍)
                                     </button>
                                     <button class="btn btn-secondary" id="bid-3x-btn">
-                                        <i class="fas fa-crown"></i> Bid 3x
+                                        <i class="fas fa-crown"></i> 抢地主 (3倍)
                                     </button>
                                     <button class="btn btn-danger" id="pass-bid-btn">
-                                        <i class="fas fa-times"></i> Pass
+                                        <i class="fas fa-times"></i> 不叫
                                     </button>
                                 </div>
                                 <div id="waiting-bid" class="waiting-message">
-                                    <i class="fas fa-hourglass-half"></i> Waiting for other players to bid...
+                                    <i class="fas fa-hourglass-half"></i> 等待其他玩家叫地主...
                                 </div>
                             </div>
                             
-                            <!-- Playing Panel (visible during playing phase) -->
+                            <!-- 出牌面板 (出牌阶段可见) -->
                             <div id="playing-panel" class="action-panel">
-                                <div class="panel-title">Playing Phase</div>
+                                <div class="panel-title">出牌阶段</div>
                                 <div class="button-group play-buttons" id="play-controls">
                                     <button class="btn btn-success" id="play-cards-btn">
-                                        <i class="fas fa-play"></i> Play Cards
+                                        <i class="fas fa-play"></i> 出牌
                                     </button>
                                     <button class="btn btn-warning" id="pass-turn-btn">
-                                        <i class="fas fa-forward"></i> Pass Turn
+                                        <i class="fas fa-forward"></i> 过牌
                                     </button>
                                     <button class="btn btn-info" id="hint-btn">
-                                        <i class="fas fa-lightbulb"></i> Get Hint
+                                        <i class="fas fa-lightbulb"></i> 提示
                                     </button>
                                     <button class="btn btn-secondary" id="sort-hand-btn">
-                                        <i class="fas fa-sort-amount-down"></i> Sort Hand
+                                        <i class="fas fa-sort-amount-down"></i> 排序手牌
                                     </button>
                                 </div>
                                 <div id="waiting-play" class="waiting-message">
-                                    <i class="fas fa-hourglass-half"></i> Waiting for your turn...
+                                    <i class="fas fa-hourglass-half"></i> 等待您的回合...
                                 </div>
                             </div>
                             
                             <!-- Game Controls -->
                             <div class="button-group game-controls">
                                 <button class="btn btn-outline" id="undo-btn">
-                                    <i class="fas fa-undo"></i> Undo
+                                    <i class="fas fa-undo"></i> 撤销
                                 </button>
                                 <button class="btn btn-outline" id="settings-btn">
-                                    <i class="fas fa-cog"></i> Settings
+                                    <i class="fas fa-cog"></i> 设置
                                 </button>
                                 <button class="btn btn-outline" id="help-btn">
-                                    <i class="fas fa-question-circle"></i> Help
+                                    <i class="fas fa-question-circle"></i> 帮助
                                 </button>
                                 <button class="btn btn-danger" id="quit-btn">
-                                    <i class="fas fa-sign-out-alt"></i> Quit Game
+                                    <i class="fas fa-sign-out-alt"></i> 退出游戏
                                 </button>
                             </div>
                         </div>
@@ -322,10 +322,10 @@
         </div>
     </div>
 
-    <!-- Chat Panel -->
+    <!-- 聊天面板 -->
     <div class="chat-panel" id="chat-panel">
         <div class="chat-header">
-            <h3><i class="fas fa-comments"></i> Chat</h3>
+            <h3><i class="fas fa-comments"></i> 聊天</h3>
             <button class="btn btn-small" id="chat-toggle">
                 <i class="fas fa-chevron-down"></i>
             </button>
@@ -333,59 +333,59 @@
         <div class="chat-messages" id="chat-messages">
             <div class="chat-message system">
                 <span class="message-time">[00:00]</span>
-                <span class="message-content">Welcome to Dou Dizhu!</span>
+                <span class="message-content">欢迎来到斗地主！</span>
             </div>
         </div>
         <div class="chat-input">
-            <input type="text" id="chat-input" placeholder="Type a message...">
+            <input type="text" id="chat-input" placeholder="输入消息...">
             <button class="btn btn-primary" id="chat-send">
                 <i class="fas fa-paper-plane"></i>
             </button>
         </div>
     </div>
 
-    <!-- Modals -->
+    <!-- 模态框 -->
     <div class="modal" id="settings-modal">
         <div class="modal-content">
             <div class="modal-header">
-                <h3><i class="fas fa-cog"></i> Game Settings</h3>
+                <h3><i class="fas fa-cog"></i> 游戏设置</h3>
                 <button class="btn btn-small" id="close-settings">
                     <i class="fas fa-times"></i>
                 </button>
             </div>
             <div class="modal-body">
                 <div class="form-group">
-                    <label for="ai-difficulty">AI Difficulty</label>
+                    <label for="ai-difficulty">AI难度</label>
                     <select id="ai-difficulty">
-                        <option value="easy">Easy</option>
-                        <option value="medium" selected>Medium</option>
-                        <option value="hard">Hard</option>
+                        <option value="easy">简单</option>
+                        <option value="medium" selected>中等</option>
+                        <option value="hard">困难</option>
                     </select>
                 </div>
                 <div class="form-group">
-                    <label for="game-speed">Game Speed</label>
+                    <label for="game-speed">游戏速度</label>
                     <select id="game-speed">
-                        <option value="slow">Slow</option>
-                        <option value="normal" selected>Normal</option>
-                        <option value="fast">Fast</option>
+                        <option value="slow">慢</option>
+                        <option value="normal" selected>正常</option>
+                        <option value="fast">快</option>
                     </select>
                 </div>
                 <div class="form-group">
                     <label>
                         <input type="checkbox" id="sound-effects" checked>
-                        Sound Effects
+                        音效
                     </label>
                 </div>
                 <div class="form-group">
                     <label>
                         <input type="checkbox" id="card-animations" checked>
-                        Card Animations
+                        牌面动画
                     </label>
                 </div>
             </div>
             <div class="modal-footer">
                 <button class="btn btn-primary" id="save-settings">
-                    Save Settings
+                    保存设置
                 </button>
             </div>
         </div>
@@ -394,35 +394,35 @@
     <div class="modal" id="help-modal">
         <div class="modal-content">
             <div class="modal-header">
-                <h3><i class="fas fa-question-circle"></i> Game Help</h3>
+                <h3><i class="fas fa-question-circle"></i> 游戏帮助</h3>
                 <button class="btn btn-small" id="close-help">
                     <i class="fas fa-times"></i>
                 </button>
             </div>
             <div class="modal-body">
-                <h4>How to Play Dou Dizhu</h4>
-                <p>Dou Dizhu is a 3-player card game where one player (the Landlord) plays against the other two (Farmers).</p>
+                <h4>斗地主游戏玩法</h4>
+                <p>斗地主是一款3人扑克游戏，一名玩家（地主）对抗另外两名玩家（农民）。</p>
                 
-                <h4>Game Phases</h4>
+                <h4>游戏阶段</h4>
                 <ol>
-                    <li><strong>Dealing:</strong> Each player gets 17 cards, 3 cards are placed face down.</li>
-                    <li><strong>Bidding:</strong> Players bid to become the Landlord.</li>
-                    <li><strong>Landlord Reveal:</strong> The winner gets the 3 hidden cards.</li>
-                    <li><strong>Playing:</strong> Players take turns playing cards following the pattern.</li>
+                    <li><strong>发牌阶段：</strong>每位玩家获得17张牌，3张牌作为底牌。</li>
+                    <li><strong>叫地主阶段：</strong>玩家竞拍地主身份。</li>
+                    <li><strong>地主亮牌阶段：</strong>赢得竞拍的玩家获得3张底牌。</li>
+                    <li><strong>出牌阶段：</strong>玩家按照牌型规则轮流出牌。</li>
                 </ol>
                 
-                <h4>Card Patterns</h4>
+                <h4>牌型规则</h4>
                 <ul>
-                    <li>Single card</li>
-                    <li>Pair (two cards of same rank)</li>
-                    <li>Triplet (three cards of same rank)</li>
-                    <li>Bomb (four cards of same rank)</li>
-                    <li>Rocket (Big Joker + Small Joker)</li>
+                    <li>单张</li>
+                    <li>对子（两张相同点数的牌）</li>
+                    <li>三张（三张相同点数的牌）</li>
+                    <li>炸弹（四张相同点数的牌）</li>
+                    <li>火箭（大王+小王）</li>
                 </ul>
             </div>
         </div>
     </div>
 
-    <script src="/frontend/game.js?v=1.0.2"></script>
+    <script src="/frontend/game.js?v=1.1.0"></script>
 </body>
 </html>
