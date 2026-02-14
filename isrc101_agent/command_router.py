@@ -1290,11 +1290,18 @@ def _cmd_copy(ctx: CommandContext, args: list[str]) -> str:
     # /copy file <path> — export to file
     if len(args) >= 2 and args[0] == "file":
         filepath = " ".join(args[1:])
+        # Resolve and validate — must stay under project root
+        project_root = Path(ctx.config.project_root).resolve()
+        target = Path(filepath).resolve()
+        if not str(target).startswith(str(project_root)):
+            ctx.console.print(f"  [{THEME_ERROR}]Refused: path is outside project root[/{THEME_ERROR}]")
+            return ""
         lines = [_format_message_text(m) for m in conversation if m.get("role") in ("user", "assistant")]
         text = "\n\n".join(lines)
         try:
-            Path(filepath).write_text(text, encoding="utf-8")
-            ctx.console.print(f"  [{THEME_SUCCESS}]✓ Exported {len(lines)} messages to {filepath}[/{THEME_SUCCESS}]")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+            ctx.console.print(f"  [{THEME_SUCCESS}]✓ Exported {len(lines)} messages to {target}[/{THEME_SUCCESS}]")
         except Exception as exc:
             ctx.console.print(f"  [{THEME_ERROR}]Write failed: {exc}[/{THEME_ERROR}]")
         return ""

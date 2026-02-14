@@ -6,10 +6,39 @@ __pycache__/
 dist/
 build/
 .env
+.env.*
+!.env.example
 .agent.conf.yml
 
 # isrc101-agent undo history
 .isrc101-undo/
 
-# web_doudizhu virtualenv
+# Secrets / credentials — never commit
+*.pem
+*.key
+*.p12
+*.pfx
+*credential*
+*secret*
+
+# Logs and databases
+*.log
+*.db
+*.sqlite
+*.sqlite3
+logs/
+
+# web_doudizhu
 web_doudizhu/venv/
+web_doudizhu/data/
+web_doudizhu/logs/
+web_doudizhu/nul
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
