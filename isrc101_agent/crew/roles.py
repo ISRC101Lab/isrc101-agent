@@ -22,7 +22,6 @@ class RoleSpec:
     blocked_tools: Optional[List[str]] = None
     model_override: Optional[str] = None
     temperature_override: Optional[float] = None
-    max_iterations: int = 15
     auto_confirm: bool = True
 
 
@@ -36,7 +35,6 @@ DEFAULT_ROLES = {
             "Focus only on the task assigned to you."
         ),
         mode="agent",
-        max_iterations=20,
         blocked_tools=["web_search", "web_fetch"],
     ),
     "reviewer": RoleSpec(
@@ -49,7 +47,6 @@ DEFAULT_ROLES = {
         ),
         mode="ask",
         allowed_tools=["read_file", "list_directory", "search_files", "find_files", "find_symbol"],
-        max_iterations=10,
     ),
     "researcher": RoleSpec(
         name="researcher",
@@ -60,7 +57,6 @@ DEFAULT_ROLES = {
             "Cite sources when possible."
         ),
         mode="ask",
-        max_iterations=10,
     ),
     "tester": RoleSpec(
         name="tester",
@@ -71,7 +67,6 @@ DEFAULT_ROLES = {
             "Run tests with bash and report results."
         ),
         mode="agent",
-        max_iterations=15,
     ),
 }
 
@@ -93,7 +88,6 @@ def load_roles_from_config(config: "Config") -> dict[str, RoleSpec]:
             blocked_tools=spec.get("blocked-tools"),
             model_override=spec.get("model-override"),
             temperature_override=spec.get("temperature-override"),
-            max_iterations=spec.get("max-iterations", 15),
             auto_confirm=spec.get("auto-confirm", True),
         )
 
@@ -164,7 +158,6 @@ def create_agent_for_role(
     agent = Agent(
         llm=llm,
         tools=tools,
-        max_iterations=role.max_iterations,
         auto_confirm=role.auto_confirm,
         chat_mode=role.mode,
         auto_commit=False,  # Coordinator handles commits

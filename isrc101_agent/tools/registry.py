@@ -124,6 +124,15 @@ class ToolRegistry:
                      ["path", "content"]),
             mode="code", writes=True,
         )
+        self._tools["append_file"] = T(
+            handler=lambda **a: f.append_file(a["path"], a["content"]),
+            schema=S("append_file",
+                     "Append content to an existing file. Use for writing large files in chunks.",
+                     {"path": _S("File path to append to"),
+                      "content": _S("Content to append at end of file")},
+                     ["path", "content"]),
+            mode="code", writes=True,
+        )
         self._tools["delete_file"] = T(
             handler=lambda **a: f.delete_file(a["path"]),
             schema=S("delete_file", "Delete a file.",
@@ -349,7 +358,7 @@ class ToolRegistry:
         """Return accumulated metrics for all tools."""
         return dict(self._metrics)
 
-    WRITE_TOOLS = {"create_file", "write_file", "str_replace", "delete_file"}
+    WRITE_TOOLS = {"create_file", "write_file", "append_file", "str_replace", "delete_file"}
     CONFIRM_TOOLS = {"bash"}
     PARALLEL_SAFE_TOOLS = {
         "read_file",

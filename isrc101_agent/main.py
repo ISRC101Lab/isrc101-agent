@@ -158,7 +158,6 @@ def run(model, api_key, api_base, project_dir, auto_confirm, mode, no_git, verbo
     agent = Agent(
         llm=llm,
         tools=tools,
-        max_iterations=config.max_iterations,
         auto_confirm=config.auto_confirm,
         chat_mode=config.chat_mode,
         auto_commit=config.auto_commit,

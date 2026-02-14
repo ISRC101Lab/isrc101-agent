@@ -14,7 +14,6 @@ from rich.table import Table
 from .agent import Agent
 from .config import Config, ModelPreset
 from .llm import LLMAdapter
-from .session import list_sessions, load_session, save_session
 from .skills import build_skill_instructions, discover_skills
 from .tools import ToolRegistry
 from .ui import SLASH_COMMANDS
@@ -359,211 +358,33 @@ def _cmd_mode(ctx: CommandContext, args: list[str]) -> str:
     return ""
 
 
-def _cmd_save(ctx: CommandContext, args: list[str]) -> str:
-    if not ctx.agent.conversation:
-        ctx.console.print(f"  [{THEME_DIM}]Nothing to save (empty conversation)[/{THEME_DIM}]")
+def _cmd_sessions(ctx: CommandContext, args: list[str]) -> str:
+    """Interactive session picker — arrow keys to select, Enter to load."""
+    from .session import list_sessions_enhanced, load_session
+    from .ui import select_session_interactive
+
+    sessions = list_sessions_enhanced(20)
+    if not sessions:
+        ctx.console.print(f"  [{THEME_DIM}]No saved sessions[/{THEME_DIM}]")
         return ""
 
-    name = args[0] if args else None
-    metadata = {"mode": ctx.agent.mode, "model": ctx.config.active_model}
-    filename = save_session(ctx.agent.conversation, name, metadata)
-    ctx.console.print(f"  [{THEME_SUCCESS}]✓ Saved session: {filename}[/{THEME_SUCCESS}]")
-    return ""
-
-
-def _cmd_load(ctx: CommandContext, args: list[str]) -> str:
-    if not args:
-        sessions = list_sessions(5)
-        if not sessions:
-            ctx.console.print(f"  [{THEME_DIM}]No saved sessions[/{THEME_DIM}]")
-        else:
-            ctx.console.print("  [bold]Recent sessions:[/bold]")
-            for session in sessions:
-                ctx.console.print(
-                    f"    {session['name']} ({session['messages']} msgs, {session['created_at']})"
-                )
-            ctx.console.print(f"  [{THEME_DIM}]Use /load <name> to load[/{THEME_DIM}]")
+    selected = select_session_interactive(sessions)
+    if not selected:
         return ""
 
-    data = load_session(args[0])
+    data = load_session(selected)
     if data:
         ctx.agent.conversation = data.get("conversation", [])
         restored = _restore_session_metadata(ctx, data)
         ctx.console.print(
-            f"  [{THEME_SUCCESS}]✓ Loaded: {data.get('name')} ({len(ctx.agent.conversation)} messages)[/{THEME_SUCCESS}]"
+            f"  [{THEME_SUCCESS}]{get_icon('✓')} Loaded: {data.get('name')} "
+            f"({len(ctx.agent.conversation)} messages)[/{THEME_SUCCESS}]"
         )
         if restored:
             ctx.console.print(f"  [{THEME_DIM}]↳ restored {', '.join(restored)}[/{THEME_DIM}]")
     else:
-        ctx.console.print(f"  [{THEME_WARN}]Session not found: {args[0]}[/{THEME_WARN}]")
+        ctx.console.print(f"  [{THEME_WARN}]Session not found: {selected}[/{THEME_WARN}]")
     return ""
-
-
-def _cmd_sessions(ctx: CommandContext, args: list[str]) -> str:
-    """Enhanced session management with subcommands."""
-    from .session import (
-        list_sessions_enhanced, render_session_timeline,
-        export_session_markdown, add_session_tag, get_session_tags,
-        search_sessions, load_session
-    )
-
-    # No args or "list": interactive picker
-    if not args or (args and args[0].lower() == "list"):
-        from .ui import select_session_interactive
-
-        sessions = list_sessions_enhanced(20)
-        if not sessions:
-            ctx.console.print(f"  [{THEME_DIM}]No saved sessions[/{THEME_DIM}]")
-            return ""
-
-        selected = select_session_interactive(sessions)
-        if not selected:
-            return ""
-
-        # Load the selected session
-        data = load_session(selected)
-        if data:
-            ctx.agent.conversation = data.get("conversation", [])
-            restored = _restore_session_metadata(ctx, data)
-            ctx.console.print(
-                f"  [{THEME_SUCCESS}]{get_icon('✓')} Loaded: {data.get('name')} "
-                f"({len(ctx.agent.conversation)} messages)[/{THEME_SUCCESS}]"
-            )
-            if restored:
-                ctx.console.print(f"  [{THEME_DIM}]↳ restored {', '.join(restored)}[/{THEME_DIM}]")
-        else:
-            ctx.console.print(f"  [{THEME_WARN}]Session not found: {selected}[/{THEME_WARN}]")
-        return ""
-
-    subcommand = args[0].lower()
-
-    # /session timeline — show current session timeline
-    if subcommand == "timeline":
-        if not ctx.agent:
-            ctx.console.print(f"  [{THEME_DIM}]No active agent session[/{THEME_DIM}]")
-            return ""
-
-        conversation = ctx.agent.conversation
-        if not conversation:
-            ctx.console.print(f"  [{THEME_DIM}]No messages in current session[/{THEME_DIM}]")
-            return ""
-
-        render_session_timeline(conversation, ctx.console)
-        return ""
-
-    # /session export [filename] — export current session
-    elif subcommand == "export":
-        if not ctx.agent:
-            ctx.console.print(f"  [{THEME_DIM}]No active agent session[/{THEME_DIM}]")
-            return ""
-
-        # Get output path from args if provided
-        output_path = args[1] if len(args) > 1 else None
-
-        # Save current session first
-        from .session import save_session
-        metadata = {
-            "model": getattr(ctx.agent.llm, 'model', 'unknown'),
-            "mode": ctx.agent._mode,
-            "tags": []
-        }
-        session_name = save_session(ctx.agent.conversation, metadata=metadata)
-
-        # Export to markdown
-        exported = export_session_markdown(session_name, output_path)
-        if exported:
-            ctx.console.print(f"  [{THEME_SUCCESS}]✓ Exported to: {exported}[/{THEME_SUCCESS}]")
-        else:
-            ctx.console.print(f"  [{THEME_ERROR}]Failed to export session[/{THEME_ERROR}]")
-        return ""
-
-    # /session tag <name> — add tag to current session
-    elif subcommand == "tag":
-        if len(args) < 2:
-            ctx.console.print(f"  [{THEME_WARN}]Usage: /session tag <tag-name>[/{THEME_WARN}]")
-            return ""
-
-        if not ctx.agent:
-            ctx.console.print(f"  [{THEME_DIM}]No active agent session[/{THEME_DIM}]")
-            return ""
-
-        # Save current session first
-        from .session import save_session
-        metadata = {
-            "model": getattr(ctx.agent.llm, 'model', 'unknown'),
-            "mode": ctx.agent._mode,
-            "tags": []
-        }
-        session_name = save_session(ctx.agent.conversation, metadata=metadata)
-
-        # Add tag
-        tag = " ".join(args[1:])
-        if add_session_tag(session_name, tag):
-            ctx.console.print(f"  [{THEME_SUCCESS}]✓ Added tag: {tag}[/{THEME_SUCCESS}]")
-        else:
-            ctx.console.print(f"  [{THEME_ERROR}]Failed to add tag[/{THEME_ERROR}]")
-        return ""
-
-    # /session tags — show current session tags
-    elif subcommand == "tags":
-        if not ctx.agent:
-            ctx.console.print(f"  [{THEME_DIM}]No active agent session[/{THEME_DIM}]")
-            return ""
-
-        # Save and get tags
-        from .session import save_session
-        metadata = {
-            "model": getattr(ctx.agent.llm, 'model', 'unknown'),
-            "mode": ctx.agent._mode,
-            "tags": []
-        }
-        session_name = save_session(ctx.agent.conversation, metadata=metadata)
-        tags = get_session_tags(session_name)
-
-        if tags:
-            ctx.console.print(f"  [{THEME_INFO}]Tags: {', '.join(tags)}[/{THEME_INFO}]")
-        else:
-            ctx.console.print(f"  [{THEME_DIM}]No tags[/{THEME_DIM}]")
-        return ""
-
-    # /session search <keyword> — search sessions
-    elif subcommand == "search":
-        if len(args) < 2:
-            ctx.console.print(f"  [{THEME_WARN}]Usage: /session search <keyword>[/{THEME_WARN}]")
-            return ""
-
-        keyword = " ".join(args[1:])
-        results = search_sessions(keyword, limit=10)
-
-        if not results:
-            ctx.console.print(f"  [{THEME_DIM}]No sessions found matching '{keyword}'[/{THEME_DIM}]")
-            return ""
-
-        table = Table(border_style=THEME_BORDER)
-        table.add_column("Session", style=f"bold {THEME_ACCENT}")
-        table.add_column("Matches", style="#E6EDF3", justify="right")
-        table.add_column("Context", style=THEME_DIM, max_width=50)
-
-        for result in results:
-            context = result["first_match"]["context"]
-            table.add_row(
-                result["name"],
-                str(result["matches"]),
-                context
-            )
-
-        ctx.console.print(Panel(
-            table,
-            title=f"[bold {THEME_ACCENT}]Search Results: '{keyword}'[/bold {THEME_ACCENT}]",
-            title_align="left",
-            border_style=THEME_BORDER
-        ))
-        return ""
-
-    else:
-        ctx.console.print(f"  [{THEME_WARN}]Unknown subcommand: {subcommand}[/{THEME_WARN}]")
-        ctx.console.print(f"  [{THEME_DIM}]Available: list, timeline, export, tag, tags, search[/{THEME_DIM}]")
-        return ""
 
 
 def _cmd_config(ctx: CommandContext, args: list[str]) -> str:
@@ -1373,8 +1194,6 @@ COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "/model": _cmd_model,
     "/skills": _cmd_skills,
     "/mode": _cmd_mode,
-    "/save": _cmd_save,
-    "/load": _cmd_load,
     "/sessions": _cmd_sessions,
     "/config": _cmd_config,
     "/stats": _cmd_stats,

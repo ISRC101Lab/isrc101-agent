@@ -145,7 +145,7 @@ class Agent:
     MAX_WEB_EVIDENCE_DOCS = 24
     SEARCH_URL_RE = _SEARCH_URL_RE
 
-    def __init__(self, llm: LLMAdapter, tools: ToolRegistry, max_iterations: int = 30,
+    def __init__(self, llm: LLMAdapter, tools: ToolRegistry,
                  auto_confirm: bool = False, chat_mode: str = "agent",
                  auto_commit: bool = True,
                  skill_instructions: Optional[str] = None,
@@ -175,7 +175,6 @@ class Agent:
                  auto_compact_threshold: int = 85):
         self.llm = llm
         self.tools = tools
-        self.max_iterations = max_iterations
         self.auto_confirm = auto_confirm
         self.auto_commit = auto_commit
         self.skill_instructions = skill_instructions
@@ -497,7 +496,7 @@ class Agent:
             self.answer_style,
         )
 
-        for _ in range(self.max_iterations):
+        while True:
             if self._budget_exhausted:
                 return "Token budget exhausted — results saved."
             if self.iteration_hook:
@@ -573,22 +572,6 @@ class Agent:
                 msg = f"Stopping: {_MAX_EMPTY} consecutive empty responses."
                 self._print(f"\n[{_T_WARN}]{msg}[/{_T_WARN}]")
                 return msg
-
-        # Clean up orphan tool calls before exiting
-        if self.conversation:
-            last = self.conversation[-1]
-            if last.get("role") == "assistant" and last.get("tool_calls"):
-                existing_ids = {m.get("tool_call_id") for m in self.conversation if m.get("role") == "tool"}
-                for call_id in self._assistant_tool_call_ids(last):
-                    if call_id not in existing_ids:
-                        self.conversation.append({
-                            "role": "tool", "tool_call_id": call_id,
-                            "content": "(iteration limit — tool not executed)",
-                        })
-
-        msg = f"Reached max iterations ({self.max_iterations})."
-        self._print(f"\n[{_T_WARN}]{msg}[/{_T_WARN}]")
-        return msg
 
     # ── Context window management (delegated to ContextWindowManager) ──
 

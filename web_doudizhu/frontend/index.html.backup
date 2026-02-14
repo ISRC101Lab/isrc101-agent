@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dou Dizhu - Chinese Card Game</title>
+    <link rel="icon" href="/static/images/logo.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/frontend/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="game-container">
+        <!-- Game Header -->
+        <header class="game-header">
+            <h1><i class="fas fa-crown"></i> Dou Dizhu</h1>
+            <div class="game-info">
+                <span class="room-id">Room: #12345</span>
+                <span class="players-online">Players Online: 3</span>
+            </div>
+        </header>
+
+        <!-- Main Game Area -->
+        <main class="game-main">
+            <!-- Status Panel -->
+            <div class="status-panel">
+                <div class="game-status">
+                    <h3><i class="fas fa-info-circle"></i> Game Status</h3>
+                    <div class="status-content">
+                        <div class="status-item">
+                            <span class="status-label">Round:</span>
+                            <span class="status-value" id="round-number">1</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">Turn:</span>
+                            <span class="status-value" id="current-player">Player 1</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">Phase:</span>
+                            <span class="status-value" id="game-phase">Bidding</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">Landlord:</span>
+                            <span class="status-value" id="landlord-player">None</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">Score:</span>
+                            <span class="status-value" id="game-score">0 - 0</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="action-log">
+                    <h3><i class="fas fa-history"></i> Action Log</h3>
+                    <div class="log-content" id="action-log">
+                        <div class="log-entry">Game started</div>
+                        <div class="log-entry">Player 1 joined</div>
+                        <div class="log-entry">Player 2 joined</div>
+                        <div class="log-entry">Player 3 joined</div>
+                    </div>
+                </div>
+
+                <div class="player-stats">
+                    <h3><i class="fas fa-chart-bar"></i> Player Stats</h3>
+                    <div class="stats-content">
+                        <div class="player-stat" data-player="1">
+                            <span class="player-name">Player 1</span>
+                            <span class="player-cards">17 cards</span>
+                            <span class="player-score">0 pts</span>
+                        </div>
+                        <div class="player-stat" data-player="2">
+                            <span class="player-name">Player 2</span>
+                            <span class="player-cards">17 cards</span>
+                            <span class="player-score">0 pts</span>
+                        </div>
+                        <div class="player-stat" data-player="3">
+                            <span class="player-name">Player 3</span>
+                            <span class="player-cards">17 cards</span>
+                            <span class="player-score">0 pts</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Game Table -->
+            <div class="game-table">
+                <!-- Player 1 Area (Top) -->
+                <div class="player-area player-top" data-player="1">
+                    <div class="player-info">
+                        <div class="player-avatar">
+                            <i class="fas fa-user"></i>
+                        </div>
+                        <div class="player-details">
+                            <span class="player-name">Player 1</span>
+                            <span class="player-role" id="player1-role">Farmer</span>
+                        </div>
+                        <div class="player-status">
+                            <span class="cards-count" id="player1-cards">17 cards</span>
+                            <div class="player-turn-indicator" id="player1-turn"></div>
+                        </div>
+                    </div>
+                    <div class="player-hand" id="player1-hand">
+                        <!-- Cards will be displayed here -->
+                        <div class="card-placeholder">Cards hidden</div>
+                    </div>
+                </div>
+
+                <!-- Player 2 Area (Left) -->
+                <div class="player-area player-left" data-player="2">
+                    <div class="player-info">
+                        <div class="player-avatar">
+                            <i class="fas fa-user"></i>
+                        </div>
+                        <div class="player-details">
+                            <span class="player-name">Player 2</span>
+                            <span class="player-role" id="player2-role">Farmer</span>
+                        </div>
+                        <div class="player-status">
+                            <span class="cards-count" id="player2-cards">17 cards</span>
+                            <div class="player-turn-indicator" id="player2-turn"></div>
+                        </div>
+                    </div>
+                    <div class="player-hand" id="player2-hand">
+                        <!-- Cards will be displayed here -->
+                        <div class="card-placeholder">Cards hidden</div>
+                    </div>
+                </div>
+
+                <!-- Player 3 Area (Right) -->
+                <div class="player-area player-right" data-player="3">
+                    <div class="player-info">
+                        <div class="player-avatar">
+                            <i class="fas fa-user"></i>
+                        </div>
+                        <div class="player-details">
+                            <span class="player-name">Player 3</span>
+                            <span class="player-role" id="player3-role">Farmer</span>
+                        </div>
+                        <div class="player-status">
+                            <span class="cards-count" id="player3-cards">17 cards</span>
+                            <div class="player-turn-indicator" id="player3-turn"></div>
+                        </div>
+                    </div>
+                    <div class="player-hand" id="player3-hand">
+                        <!-- Cards will be displayed here -->
+                        <div class="card-placeholder">Cards hidden</div>
+                    </div>
+                </div>
+
+                <!-- Center Table Area -->
+                <div class="table-center">
+                    <div class="deck-area">
+                        <div class="deck" id="main-deck">
+                            <div class="deck-count">20</div>
+                            <div class="deck-label">Deck</div>
+                        </div>
+                        <div class="landlord-cards" id="landlord-cards">
+                            <div class="landlord-label">Landlord Cards</div>
+                            <div class="cards-container">
+                                <!-- 3 landlord cards will appear here -->
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="play-area">
+                        <div class="current-play" id="current-play">
+                            <div class="play-label">Current Play</div>
+                            <div class="played-cards">
+                                <!-- Last played cards will appear here -->
+                            </div>
+                        </div>
+                        <div class="play-history" id="play-history">
+                            <div class="history-label">Play History</div>
+                            <div class="history-entries">
+                                <!-- Previous plays will appear here -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Current Player Area (Bottom) -->
+                <div class="player-area player-bottom current-player" data-player="0">
+                    <div class="player-info">
+                        <div class="player-avatar">
+                            <i class="fas fa-user"></i>
+                        </div>
+                        <div class="player-details">
+                            <span class="player-name">You (Player 1)</span>
+                            <span class="player-role" id="current-player-role">Farmer</span>
+                        </div>
+                        <div class="player-status">
+                            <span class="cards-count" id="current-player-cards">17 cards</span>
+                            <div class="player-turn-indicator active" id="current-player-turn"></div>
+                        </div>
+                    </div>
+                    
+                    <!-- Hand Card Display -->
+                    <div class="hand-display" id="hand-display">
+                        <!-- Player's hand cards will be displayed here -->
+                        <div class="hand-instruction">Select cards from your hand to play</div>
+                        <div class="cards-container" id="cards-container">
+                            <!-- Cards will be dynamically added here -->
+                        </div>
+                    </div>
+
+                    <!-- Action Buttons -->
+                    <div class="action-buttons">
+                        <div class="button-group bidding-buttons">
+                            <button class="btn btn-primary" id="call-landlord-btn">
+                                <i class="fas fa-crown"></i> Call Landlord (1x)
+                            </button>
+                            <button class="btn btn-secondary" id="bid-2x-btn">
+                                <i class="fas fa-crown"></i> Bid 2x
+                            </button>
+                            <button class="btn btn-secondary" id="bid-3x-btn">
+                                <i class="fas fa-crown"></i> Bid 3x
+                            </button>
+                            <button class="btn btn-danger" id="pass-bid-btn">
+                                <i class="fas fa-times"></i> Pass
+                            </button>
+                        </div>
+
+                        <div class="button-group play-buttons">
+                            <button class="btn btn-success" id="play-cards-btn">
+                                <i class="fas fa-play"></i> Play Cards
+                            </button>
+                            <button class="btn btn-warning" id="pass-turn-btn">
+                                <i class="fas fa-forward"></i> Pass Turn
+                            </button>
+                            <button class="btn btn-info" id="hint-btn">
+                                <i class="fas fa-lightbulb"></i> Get Hint
+                            </button>
+                            <button class="btn btn-secondary" id="sort-hand-btn">
+                                <i class="fas fa-sort-amount-down"></i> Sort Hand
+                            </button>
+                        </div>
+
+                        <div class="button-group game-controls">
+                            <button class="btn btn-outline" id="undo-btn">
+                                <i class="fas fa-undo"></i> Undo
+                            </button>
+                            <button class="btn btn-outline" id="settings-btn">
+                                <i class="fas fa-cog"></i> Settings
+                            </button>
+                            <button class="btn btn-outline" id="help-btn">
+                                <i class="fas fa-question-circle"></i> Help
+                            </button>
+                            <button class="btn btn-danger" id="quit-btn">
+                                <i class="fas fa-sign-out-alt"></i> Quit Game
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Game Footer -->
+        <footer class="game-footer">
+            <div class="footer-left">
+                <span class="timer" id="game-timer">00:00</span>
+                <span class="connection-status connected">
+                    <i class="fas fa-wifi"></i> Connected
+                </span>
+            </div>
+            <div class="footer-center">
+                <span class="game-version">Dou Dizhu v1.0</span>
+            </div>
+            <div class="footer-right">
+                <button class="btn btn-small" id="chat-toggle">
+                    <i class="fas fa-comment"></i> Chat
+                </button>
+                <button class="btn btn-small" id="sound-toggle">
+                    <i class="fas fa-volume-up"></i> Sound
+                </button>
+                <button class="btn btn-small" id="fullscreen-toggle">
+                    <i class="fas fa-expand"></i> Fullscreen
+                </button>
+            </div>
+        </footer>
+
+        <!-- Chat Panel (Hidden by default) -->
+        <div class="chat-panel" id="chat-panel">
+            <div class="chat-header">
+                <h4><i class="fas fa-comments"></i> Game Chat</h4>
+                <button class="btn btn-small" id="close-chat">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="chat-messages" id="chat-messages">
+                <div class="chat-message system">
+                    <span class="message-time">[00:00]</span>
+                    <span class="message-sender">System:</span>
+                    <span class="message-text">Welcome to Dou Dizhu!</span>
+                </div>
+            </div>
+            <div class="chat-input">
+                <input type="text" id="chat-input" placeholder="Type your message...">
+                <button class="btn btn-small" id="send-chat">
+                    <i class="fas fa-paper-plane"></i>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal (Hidden by default) -->
+    <div class="modal" id="settings-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3><i class="fas fa-cog"></i> Game Settings</h3>
+                <button class="btn btn-small" id="close-settings">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <!-- Settings content will go here -->
+            </div>
+        </div>
+    </div>
+
+    <script src="/frontend/game.js"></script>
+</body>
+</html>

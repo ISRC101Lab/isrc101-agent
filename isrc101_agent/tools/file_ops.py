@@ -91,6 +91,17 @@ class FileOps:
         verb = "Overwrote" if existed else "Created"
         return f"{verb} {path} ({len(content.splitlines())} lines)"
 
+    def append_file(self, path: str, content: str) -> str:
+        fp = self._resolve(path)
+        if not fp.exists():
+            raise FileOperationError(f"File not found: {path}. Use create_file first.")
+        self.undo.backup_file(path, "append_file", {"path": path})
+        existing = fp.read_text(encoding="utf-8")
+        fp.write_text(existing + content, encoding="utf-8")
+        total_lines = len((existing + content).splitlines())
+        appended_lines = len(content.splitlines())
+        return f"Appended {appended_lines} lines to {path} (now {total_lines} lines)"
+
     def str_replace(self, path: str, old_str: str, new_str: str) -> str:
         fp = self._resolve(path)
         if not fp.exists():

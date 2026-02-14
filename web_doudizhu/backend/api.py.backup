@@ -128,7 +128,7 @@ async def list_rooms():
     return {"rooms": rooms, "count": len(rooms)}
 
 
-@app.post("/api/rooms")
+@app.post("/rooms")
 async def create_room(request: CreateRoomRequest):
     """创建房间"""
     room_id = str(uuid.uuid4())[:8]
@@ -147,7 +147,7 @@ async def create_room(request: CreateRoomRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.post("/api/rooms/{room_id}/join")
+@app.post("/rooms/{room_id}/join")
 async def join_room(room_id: str, request: JoinRoomRequest):
     """加入房间"""
     game = game_manager.get_game(room_id)
@@ -167,7 +167,7 @@ async def join_room(room_id: str, request: JoinRoomRequest):
     }
 
 
-@app.post("/api/rooms/{room_id}/ai")
+@app.post("/rooms/{room_id}/ai")
 async def add_ai_player(room_id: str, request: AddAIRequest):
     """添加AI玩家"""
     game = game_manager.get_game(room_id)
@@ -198,7 +198,7 @@ async def add_ai_player(room_id: str, request: AddAIRequest):
     }
 
 
-@app.get("/api/rooms/{room_id}")
+@app.get("/rooms/{room_id}")
 async def get_room_info(room_id: str):
     """获取房间信息"""
     game = game_manager.get_game(room_id)
@@ -208,7 +208,7 @@ async def get_room_info(room_id: str):
     return game.to_dict()
 
 
-@app.post("/api/rooms/{room_id}/bid")
+@app.post("/rooms/{room_id}/bid")
 async def bid(room_id: str, player_id: str, request: BidRequest):
     """叫地主"""
     game = game_manager.get_game(room_id)
@@ -229,7 +229,7 @@ async def bid(room_id: str, player_id: str, request: BidRequest):
     return {"success": True, "message": "叫地主成功"}
 
 
-@app.post("/api/rooms/{room_id}/play")
+@app.post("/rooms/{room_id}/play")
 async def play_cards(room_id: str, player_id: str, request: PlayCardsRequest):
     """出牌"""
     game = game_manager.get_game(room_id)
@@ -254,7 +254,7 @@ async def play_cards(room_id: str, player_id: str, request: PlayCardsRequest):
     return {"success": True, "message": "出牌成功"}
 
 
-@app.post("/api/rooms/{room_id}/pass")
+@app.post("/rooms/{room_id}/pass")
 async def pass_turn(room_id: str, player_id: str):
     """过牌"""
     game = game_manager.get_game(room_id)
@@ -279,14 +279,14 @@ async def pass_turn(room_id: str, player_id: str):
     return {"success": True, "message": "过牌成功"}
 
 
-@app.get("/api/leaderboard")
+@app.get("/leaderboard")
 async def get_leaderboard(limit: int = 10):
     """获取排行榜"""
     leaderboard = scoring_system.get_leaderboard(limit)
     return {"leaderboard": leaderboard}
 
 
-@app.get("/api/players/{player_id}/stats")
+@app.get("/players/{player_id}/stats")
 async def get_player_stats(player_id: str):
     """获取玩家统计信息"""
     stats = scoring_system.get_player_stats(player_id)
@@ -296,7 +296,7 @@ async def get_player_stats(player_id: str):
     return stats
 
 
-@app.get("/api/games/history")
+@app.get("/games/history")
 async def get_game_history(player_id: Optional[str] = None, limit: int = 20):
     """获取游戏历史"""
     history = scoring_system.get_game_history(player_id, limit)

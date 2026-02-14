@@ -131,14 +131,6 @@ CONFIG_FIELDS: Dict[str, ConfigFieldSpec] = {
         default="local",
         validator=None,  # Validated against available models separately
     ),
-    "max-iterations": ConfigFieldSpec(
-        key="max-iterations",
-        field_name="max_iterations",
-        description="Maximum agent iterations per turn",
-        value_type="int",
-        default=30,
-        validator=lambda v: _validate_int_range(v, 1, 100),
-    ),
     "auto-confirm": ConfigFieldSpec(
         key="auto-confirm",
         field_name="auto_confirm",
@@ -420,7 +412,6 @@ class ModelPreset:
 class Config:
     active_model: str = "local"
     models: Dict[str, ModelPreset] = field(default_factory=dict)
-    max_iterations: int = 30
     auto_confirm: bool = False
     chat_mode: str = "agent"
     auto_commit: bool = True
@@ -590,7 +581,6 @@ class Config:
             return
 
         self.active_model = data.get("active-model", "local")
-        self.max_iterations = data.get("max-iterations", 30)
         self.auto_confirm = data.get("auto-confirm", False)
         self.chat_mode = self._normalize_chat_mode(data.get("chat-mode", "agent"))
         self.auto_commit = data.get("auto-commit", True)
@@ -732,7 +722,6 @@ class Config:
 
         data = {
             "active-model": self.active_model,
-            "max-iterations": self.max_iterations,
             "auto-confirm": self.auto_confirm,
             "chat-mode": self.chat_mode,
             "auto-commit": self.auto_commit,

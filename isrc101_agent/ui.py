@@ -64,11 +64,9 @@ SLASH_COMMAND_SPECS: tuple[SlashCommandSpec, ...] = (
     SlashCommandSpec("/grounding", "/grounding",   "Control strict grounded web-answer validation", ("citations", "evidence", "hallucination")),
     SlashCommandSpec("/display",  "/display",     "Configure thinking display, answer style, and tool output", ("thinking", "summary", "verbose", "concise", "tools", "parallel")),
     SlashCommandSpec("/theme",    "/theme",       "Switch between light and dark color themes", ("color", "appearance", "dark", "light")),
-    SlashCommandSpec("/save",     "/save [name]", "Save the current conversation to a named session", ("session", "history")),
-    SlashCommandSpec("/load",     "/load [name]", "Restore a previously saved conversation session", ("session", "history")),
-    SlashCommandSpec("/sessions", "/sessions [list|timeline|export|tag|tags|search]",
-                     "Enhanced session management: list, timeline, export, tagging, search",
-                     ("session", "history", "save", "export", "timeline")),
+    SlashCommandSpec("/sessions", "/sessions",
+                     "Browse and restore saved sessions (↑↓ select, Enter load)",
+                     ("session", "history", "save", "load", "restore")),
     SlashCommandSpec("/compact",  "/compact",     "Compress conversation history to free context space", ("context", "tokens", "compress")),
     SlashCommandSpec("/context",  "/context",     "Show context window usage and token budget", ("tokens", "usage", "window")),
     SlashCommandSpec("/undo",     "/undo",        "Revert the last file change made by the agent", ("revert", "rollback")),
@@ -475,34 +473,49 @@ def select_model_interactive(config) -> str:
     kb = KeyBindings()
 
     @kb.add("up")
-    @kb.add("k")
-    def _up(_event):
+    def _up(event):
         if visible[0]:
             cursor[0] = max(0, cursor[0] - 1)
+        event.app.invalidate()
+
+    @kb.add("k")
+    def _up_k(event):
+        if visible[0]:
+            cursor[0] = max(0, cursor[0] - 1)
+        event.app.invalidate()
 
     @kb.add("down")
-    @kb.add("j")
-    def _down(_event):
+    def _down(event):
         if visible[0]:
             cursor[0] = min(len(visible[0]) - 1, cursor[0] + 1)
+        event.app.invalidate()
+
+    @kb.add("j")
+    def _down_j(event):
+        if visible[0]:
+            cursor[0] = min(len(visible[0]) - 1, cursor[0] + 1)
+        event.app.invalidate()
 
     @kb.add("backspace")
-    def _backspace(_event):
+    def _backspace(event):
         if query[0]:
             query[0] = query[0][:-1]
             refresh_visible()
+        event.app.invalidate()
 
     @kb.add("c-u")
-    def _clear_query(_event):
+    def _clear_query(event):
         if query[0]:
             query[0] = ""
             refresh_visible()
+        event.app.invalidate()
 
     @kb.add("escape")
     def _escape(event):
         if query[0]:
             query[0] = ""
             refresh_visible()
+            event.app.invalidate()
             return
         result[0] = ""
         event.app.exit()
@@ -529,10 +542,18 @@ def select_model_interactive(config) -> str:
             return
         query[0] += data
         refresh_visible()
+        event.app.invalidate()
 
     control = FormattedTextControl(get_text)
     window = Window(content=control, always_hide_cursor=True)
-    app = Application(layout=Layout(HSplit([window])), key_bindings=kb, full_screen=False)
+    app = Application(
+        layout=Layout(HSplit([window])),
+        key_bindings=kb,
+        full_screen=False,
+        mouse_support=False,
+        refresh_interval=0.5,
+        erase_when_done=True,
+    )
 
     try:
         app.run()
@@ -629,19 +650,31 @@ def select_skills_interactive(config, available_skills: dict) -> list[str]:
     kb = KeyBindings()
 
     @kb.add("up")
-    @kb.add("k")
-    def _up(_event):
+    def _up(event):
         if visible[0]:
             cursor[0] = max(0, cursor[0] - 1)
+        event.app.invalidate()
+
+    @kb.add("k")
+    def _up_k(event):
+        if visible[0]:
+            cursor[0] = max(0, cursor[0] - 1)
+        event.app.invalidate()
 
     @kb.add("down")
-    @kb.add("j")
-    def _down(_event):
+    def _down(event):
         if visible[0]:
             cursor[0] = min(len(visible[0]) - 1, cursor[0] + 1)
+        event.app.invalidate()
+
+    @kb.add("j")
+    def _down_j(event):
+        if visible[0]:
+            cursor[0] = min(len(visible[0]) - 1, cursor[0] + 1)
+        event.app.invalidate()
 
     @kb.add(" ")
-    def _toggle(_event):
+    def _toggle(event):
         name = _current_name()
         if not name:
             return
@@ -649,33 +682,39 @@ def select_skills_interactive(config, available_skills: dict) -> list[str]:
             enabled.remove(name)
         else:
             enabled.add(name)
+        event.app.invalidate()
 
     @kb.add("a")
-    def _all(_event):
+    def _all(event):
         enabled.clear()
         enabled.update(names)
+        event.app.invalidate()
 
     @kb.add("c")
-    def _clear(_event):
+    def _clear(event):
         enabled.clear()
+        event.app.invalidate()
 
     @kb.add("backspace")
-    def _backspace(_event):
+    def _backspace(event):
         if query[0]:
             query[0] = query[0][:-1]
             refresh_visible()
+        event.app.invalidate()
 
     @kb.add("c-u")
-    def _clear_query(_event):
+    def _clear_query(event):
         if query[0]:
             query[0] = ""
             refresh_visible()
+        event.app.invalidate()
 
     @kb.add("escape")
     def _escape(event):
         if query[0]:
             query[0] = ""
             refresh_visible()
+            event.app.invalidate()
             return
         result[0] = None
         event.app.exit()
@@ -699,10 +738,18 @@ def select_skills_interactive(config, available_skills: dict) -> list[str]:
             return
         query[0] += data
         refresh_visible()
+        event.app.invalidate()
 
     control = FormattedTextControl(get_text)
     window = Window(content=control, always_hide_cursor=True)
-    app = Application(layout=Layout(HSplit([window])), key_bindings=kb, full_screen=False)
+    app = Application(
+        layout=Layout(HSplit([window])),
+        key_bindings=kb,
+        full_screen=False,
+        mouse_support=False,
+        refresh_interval=0.5,
+        erase_when_done=True,
+    )
 
     try:
         app.run()
@@ -730,6 +777,7 @@ def select_session_interactive(sessions: list[dict]) -> str:
     visible = [list(range(len(sessions)))]
     cursor = [0]
     result = [""]
+    _app_ref = [None]  # Store app reference for invalidation
 
     def refresh_visible():
         lowered = query[0].strip().lower()
@@ -750,7 +798,7 @@ def select_session_interactive(sessions: list[dict]) -> str:
 
     def get_text():
         lines = []
-        lines.append(("bold #7FA6D9", " sessions\n"))
+        lines.append((f"bold {THEME_ACCENT}", " sessions\n"))
         lines.append(("#66788A", " \u2191\u2193/jk move \u2022 type filter \u2022 Enter load \u2022 Esc cancel\n"))
 
         q = query[0].strip()
@@ -793,34 +841,49 @@ def select_session_interactive(sessions: list[dict]) -> str:
     kb = KeyBindings()
 
     @kb.add("up")
-    @kb.add("k")
-    def _up(_event):
+    def _up(event):
         if visible[0]:
             cursor[0] = max(0, cursor[0] - 1)
+        event.app.invalidate()
+
+    @kb.add("k")
+    def _up_k(event):
+        if visible[0]:
+            cursor[0] = max(0, cursor[0] - 1)
+        event.app.invalidate()
 
     @kb.add("down")
-    @kb.add("j")
-    def _down(_event):
+    def _down(event):
         if visible[0]:
             cursor[0] = min(len(visible[0]) - 1, cursor[0] + 1)
+        event.app.invalidate()
+
+    @kb.add("j")
+    def _down_j(event):
+        if visible[0]:
+            cursor[0] = min(len(visible[0]) - 1, cursor[0] + 1)
+        event.app.invalidate()
 
     @kb.add("backspace")
-    def _backspace(_event):
+    def _backspace(event):
         if query[0]:
             query[0] = query[0][:-1]
             refresh_visible()
+        event.app.invalidate()
 
     @kb.add("c-u")
-    def _clear_query(_event):
+    def _clear_query(event):
         if query[0]:
             query[0] = ""
             refresh_visible()
+        event.app.invalidate()
 
     @kb.add("escape")
     def _escape(event):
         if query[0]:
             query[0] = ""
             refresh_visible()
+            event.app.invalidate()
             return
         result[0] = ""
         event.app.exit()
@@ -847,10 +910,19 @@ def select_session_interactive(sessions: list[dict]) -> str:
             return
         query[0] += data
         refresh_visible()
+        event.app.invalidate()
 
     control = FormattedTextControl(get_text)
     window = Window(content=control, always_hide_cursor=True)
-    app = Application(layout=Layout(HSplit([window])), key_bindings=kb, full_screen=False)
+    app = Application(
+        layout=Layout(HSplit([window])),
+        key_bindings=kb,
+        full_screen=False,
+        mouse_support=False,
+        refresh_interval=0.5,
+        erase_when_done=True,
+    )
+    _app_ref[0] = app
 
     try:
         app.run()
