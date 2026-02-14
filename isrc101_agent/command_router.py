@@ -404,52 +404,41 @@ def _cmd_sessions(ctx: CommandContext, args: list[str]) -> str:
     from .session import (
         list_sessions_enhanced, render_session_timeline,
         export_session_markdown, add_session_tag, get_session_tags,
-        search_sessions
+        search_sessions, load_session
     )
 
-    # No args: show list
-    if not args:
-        sessions = list_sessions_enhanced(10)
+    # No args or "list": interactive picker
+    if not args or (args and args[0].lower() == "list"):
+        from .ui import select_session_interactive
+
+        sessions = list_sessions_enhanced(20)
         if not sessions:
             ctx.console.print(f"  [{THEME_DIM}]No saved sessions[/{THEME_DIM}]")
             return ""
 
-        table = Table(border_style=THEME_BORDER)
-        table.add_column("Name", style=f"bold {THEME_ACCENT}")
-        table.add_column("Messages", style="#E6EDF3", justify="right")
-        table.add_column("Tags", style=THEME_INFO, max_width=20)
-        table.add_column("Tokens", style=THEME_DIM, justify="right")
-        table.add_column("Created", style=THEME_DIM)
+        selected = select_session_interactive(sessions)
+        if not selected:
+            return ""
 
-        for session in sessions:
-            tags_str = ", ".join(session["tags"][:3]) if session["tags"] else "-"
-            if len(session["tags"]) > 3:
-                tags_str += f" +{len(session['tags']) - 3}"
-
-            table.add_row(
-                session["name"],
-                str(session["messages"]),
-                tags_str,
-                f"~{session['approx_tokens']}",
-                session["created_at"]
+        # Load the selected session
+        data = load_session(selected)
+        if data:
+            ctx.agent.conversation = data.get("conversation", [])
+            restored = _restore_session_metadata(ctx, data)
+            ctx.console.print(
+                f"  [{THEME_SUCCESS}]{get_icon('✓')} Loaded: {data.get('name')} "
+                f"({len(ctx.agent.conversation)} messages)[/{THEME_SUCCESS}]"
             )
-
-        ctx.console.print(Panel(
-            table,
-            title=f"[bold {THEME_ACCENT}]Recent Sessions[/bold {THEME_ACCENT}]",
-            title_align="left",
-            border_style=THEME_BORDER
-        ))
+            if restored:
+                ctx.console.print(f"  [{THEME_DIM}]↳ restored {', '.join(restored)}[/{THEME_DIM}]")
+        else:
+            ctx.console.print(f"  [{THEME_WARN}]Session not found: {selected}[/{THEME_WARN}]")
         return ""
 
     subcommand = args[0].lower()
 
-    # /session list — same as no args
-    if subcommand == "list":
-        return _cmd_sessions(ctx, [])
-
     # /session timeline — show current session timeline
-    elif subcommand == "timeline":
+    if subcommand == "timeline":
         if not ctx.agent:
             ctx.console.print(f"  [{THEME_DIM}]No active agent session[/{THEME_DIM}]")
             return ""

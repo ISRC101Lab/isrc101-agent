@@ -710,3 +710,151 @@ def select_skills_interactive(config, available_skills: dict) -> list[str]:
         return list(config.enabled_skills)
 
     return result[0] if result[0] is not None else list(config.enabled_skills)
+
+
+def select_session_interactive(sessions: list[dict]) -> str:
+    """Codex-like session picker with arrow-key navigation and inline filtering.
+
+    Returns the selected session name, or "" if cancelled.
+    """
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.layout.containers import HSplit, Window
+    from prompt_toolkit.layout.controls import FormattedTextControl
+    from prompt_toolkit.layout.layout import Layout
+
+    if not sessions:
+        return ""
+
+    query = [""]
+    visible = [list(range(len(sessions)))]
+    cursor = [0]
+    result = [""]
+
+    def refresh_visible():
+        lowered = query[0].strip().lower()
+        if not lowered:
+            visible[0] = list(range(len(sessions)))
+        else:
+            visible[0] = [
+                idx
+                for idx, s in enumerate(sessions)
+                if lowered in s["name"].lower()
+                or lowered in " ".join(s.get("tags", [])).lower()
+                or lowered in s.get("created_at", "").lower()
+            ]
+        if visible[0]:
+            cursor[0] = min(max(cursor[0], 0), len(visible[0]) - 1)
+        else:
+            cursor[0] = 0
+
+    def get_text():
+        lines = []
+        lines.append(("bold #7FA6D9", " sessions\n"))
+        lines.append(("#66788A", " \u2191\u2193/jk move \u2022 type filter \u2022 Enter load \u2022 Esc cancel\n"))
+
+        q = query[0].strip()
+        query_text = q if q else "(all)"
+        query_style = "#7AA7E8" if q else "#66788A"
+        lines.append((query_style, f" filter: {query_text}\n"))
+        lines.append(("", "\n"))
+
+        if not visible[0]:
+            lines.append(("#D08770", " no matching sessions\n"))
+            lines.append(("#66788A", f"\n {len(visible[0])}/{len(sessions)} shown"))
+            return lines
+
+        name_w = max(14, min(24, max(len(sessions[i]["name"]) for i in visible[0]) + 1))
+
+        for pos, si in enumerate(visible[0]):
+            s = sessions[si]
+            is_current = pos == cursor[0]
+
+            pointer = "\u203a" if is_current else " "
+            msgs = str(s.get("messages", 0))
+            tags = ", ".join(s.get("tags", [])[:2]) if s.get("tags") else "-"
+            tags = _short(tags, 16)
+            tokens = f"~{s.get('approx_tokens', '?')}"
+            created = s.get("created_at", "")
+
+            if is_current:
+                row_style = "bold #E7EEF8"
+            else:
+                row_style = "#C8D8EE"
+
+            line = f" {pointer} {s['name']:<{name_w}} {msgs:>4} msgs  {tags:<16}  {tokens:>8}  {created}"
+            lines.append((row_style, line + "\n"))
+
+        lines.append(("#66788A", f"\n {len(visible[0])}/{len(sessions)} shown"))
+        return lines
+
+    refresh_visible()
+
+    kb = KeyBindings()
+
+    @kb.add("up")
+    @kb.add("k")
+    def _up(_event):
+        if visible[0]:
+            cursor[0] = max(0, cursor[0] - 1)
+
+    @kb.add("down")
+    @kb.add("j")
+    def _down(_event):
+        if visible[0]:
+            cursor[0] = min(len(visible[0]) - 1, cursor[0] + 1)
+
+    @kb.add("backspace")
+    def _backspace(_event):
+        if query[0]:
+            query[0] = query[0][:-1]
+            refresh_visible()
+
+    @kb.add("c-u")
+    def _clear_query(_event):
+        if query[0]:
+            query[0] = ""
+            refresh_visible()
+
+    @kb.add("escape")
+    def _escape(event):
+        if query[0]:
+            query[0] = ""
+            refresh_visible()
+            return
+        result[0] = ""
+        event.app.exit()
+
+    @kb.add("c-c")
+    def _cancel(event):
+        result[0] = ""
+        event.app.exit()
+
+    @kb.add("enter")
+    def _enter(event):
+        if not visible[0]:
+            return
+        si = visible[0][cursor[0]]
+        result[0] = sessions[si]["name"]
+        event.app.exit()
+
+    @kb.add("<any>")
+    def _type(event):
+        data = event.key_sequence[0].data
+        if not data or len(data) != 1:
+            return
+        if not data.isprintable() or data in ("\r", "\n", "\t", " "):
+            return
+        query[0] += data
+        refresh_visible()
+
+    control = FormattedTextControl(get_text)
+    window = Window(content=control, always_hide_cursor=True)
+    app = Application(layout=Layout(HSplit([window])), key_bindings=kb, full_screen=False)
+
+    try:
+        app.run()
+    except (KeyboardInterrupt, EOFError):
+        return ""
+
+    return result[0]

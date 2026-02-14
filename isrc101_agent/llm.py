@@ -214,7 +214,7 @@ class LLMAdapter:
     avoiding env-var pollution when switching between providers."""
 
     def __init__(self, model: str, temperature: float = 0.0,
-                 max_tokens: int = 4096, api_base: Optional[str] = None,
+                 max_tokens: int = 8192, api_base: Optional[str] = None,
                  api_key: Optional[str] = None, context_window: int = 128000):
         self.model = model
         self.temperature = temperature

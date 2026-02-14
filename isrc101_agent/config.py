@@ -378,7 +378,7 @@ class ModelPreset:
     api_key: Optional[str] = None
     api_key_env: Optional[str] = None
     temperature: float = 0.0
-    max_tokens: int = 4096
+    max_tokens: int = 8192
     context_window: int = 128000
     description: str = ""
 
@@ -527,21 +527,21 @@ class Config:
                 name="local", provider="local", model="openai/model",
                 api_base="http://localhost:8080/v1", api_key="not-needed",
                 description="Local model (vLLM / llama.cpp on :8080)",
-                max_tokens=4096, context_window=32000,
+                max_tokens=8192, context_window=32000,
             ),
             "deepseek-chat": ModelPreset(
                 name="deepseek-chat", provider="deepseek",
                 model="deepseek/deepseek-chat",
                 api_key_env="DEEPSEEK_API_KEY",
                 description="DeepSeek V3.2 (non-thinking)",
-                max_tokens=4096,
+                max_tokens=8192,
             ),
             "deepseek-reasoner": ModelPreset(
                 name="deepseek-reasoner", provider="deepseek",
                 model="deepseek/deepseek-reasoner",
                 api_key_env="DEEPSEEK_API_KEY",
                 description="DeepSeek V3.2 (thinking)",
-                max_tokens=4096,
+                max_tokens=8192,
             ),
             "qwen3-vl-235b": ModelPreset(
                 name="qwen3-vl-235b", provider="openai",
@@ -549,7 +549,7 @@ class Config:
                 api_base="https://llmapi.blsc.cn/v1/",
                 api_key_env="BLSC_API_KEY",
                 description="Qwen3-VL 235B Instruct (BLSC)",
-                max_tokens=4096,
+                max_tokens=8192,
             ),
             "qwen3-vl-235b-think": ModelPreset(
                 name="qwen3-vl-235b-think", provider="openai",
@@ -557,7 +557,7 @@ class Config:
                 api_base="https://llmapi.blsc.cn/v1/",
                 api_key_env="BLSC_API_KEY",
                 description="Qwen3-VL 235B Thinking (BLSC)",
-                max_tokens=4096,
+                max_tokens=8192,
             ),
             "qwen3-vl-30b": ModelPreset(
                 name="qwen3-vl-30b", provider="openai",
@@ -565,7 +565,7 @@ class Config:
                 api_base="https://llmapi.blsc.cn/v1/",
                 api_key_env="BLSC_API_KEY",
                 description="Qwen3-VL 30B Instruct (BLSC)",
-                max_tokens=4096,
+                max_tokens=8192,
             ),
             "qwen3-vl-30b-think": ModelPreset(
                 name="qwen3-vl-30b-think", provider="openai",
@@ -573,7 +573,7 @@ class Config:
                 api_base="https://llmapi.blsc.cn/v1/",
                 api_key_env="BLSC_API_KEY",
                 description="Qwen3-VL 30B Thinking (BLSC)",
-                max_tokens=4096,
+                max_tokens=8192,
             ),
         }
 
@@ -682,7 +682,7 @@ class Config:
                 api_base=m.get("api-base"), api_key=m.get("api-key"),
                 api_key_env=m.get("api-key-env"),
                 temperature=m.get("temperature", 0.0),
-                max_tokens=m.get("max-tokens", 4096),
+                max_tokens=m.get("max-tokens", 8192),
                 context_window=m.get("context-window", 128000),
                 description=m.get("description", ""),
             )
