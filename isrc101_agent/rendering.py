@@ -897,6 +897,11 @@ def show_write_preview(console: Console, arguments: dict, files_tools, truncatio
 def confirm_tool(console: Console, tool_name: str, arguments: dict, files_tools) -> str:
     """Show preview and prompt user. Returns 'yes', 'always', or 'no'."""
     try:
+        # Store tool info for TUI ConfirmPanel (if running in TUI mode)
+        if getattr(console, '_is_tui', False):
+            console._pending_confirm_tool = tool_name
+            console._pending_confirm_detail = _confirm_detail(tool_name, arguments)
+
         if tool_name == "str_replace":
             show_edit_preview(console, tool_name, arguments, files_tools)
         elif tool_name == "write_file":
@@ -918,6 +923,22 @@ def confirm_tool(console: Console, tool_name: str, arguments: dict, files_tools)
         return "no"
     except (KeyboardInterrupt, EOFError):
         return "no"
+
+
+def _confirm_detail(tool_name: str, arguments: dict) -> str:
+    """Extract a short detail string for the TUI confirm panel."""
+    if tool_name == "bash":
+        cmd = arguments.get("command", "")
+        return cmd[:80] if cmd else ""
+    elif tool_name == "str_replace":
+        return arguments.get("path", "")
+    elif tool_name in ("write_file", "create_file"):
+        path = arguments.get("path", "")
+        n = arguments.get("content", "").count("\n") + 1
+        return f"{path} ({n} lines)" if path else ""
+    elif tool_name == "delete_file":
+        return arguments.get("path", "")
+    return ""
 
 
 def handle_image_result(conversation: list, tc, files_tools):

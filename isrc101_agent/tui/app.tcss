@@ -37,6 +37,22 @@ ActivityBar {
     display: none;
 }
 
+/* Confirm panel — floating permission dialog (Claude-style) */
+ConfirmPanel {
+    dock: bottom;
+    background: #1C2128;
+    color: #E6EDF3;
+    height: auto;
+    max-height: 4;
+    padding: 0 1;
+    display: none;
+    border-top: solid #E3B341;
+}
+
+ConfirmPanel:focus {
+    border-top: solid #E3B341;
+}
+
 /* Status bar — model / mode / context */
 StatusBar {
     dock: bottom;

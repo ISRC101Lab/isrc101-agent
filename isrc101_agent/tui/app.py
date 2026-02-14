@@ -273,7 +273,7 @@ class ISRCApp(App):
         except (RuntimeError, AttributeError):
             pass
 
-    # ── Tool confirmation (called from worker thread) ──────
+    # ── Tool confirmation (floating panel, Claude-style) ──────
 
     def _request_confirm(
         self,
@@ -281,23 +281,46 @@ class ISRCApp(App):
         result_holder: list[str],
         result_event: threading.Event,
     ) -> None:
-        """Show confirm prompt by reusing ChatInput in confirm mode.
+        """Show floating confirmation panel (always-mounted, no lifecycle bugs).
 
-        No dynamic widget mounting — avoids Textual timer/lifecycle bugs.
+        The preview/diff is already printed to the RichLog by confirm_tool().
+        This shows a Claude-style y/n/a floating panel.
         """
         self._confirm_result = result_holder
         self._confirm_event = result_event
-        self._confirm_mode = True
 
-        # Write prompt to log
+        # Read tool info stored by confirm_tool() in rendering.py
+        tool_name = getattr(self._tui_console, '_pending_confirm_tool', 'tool')
+        detail = getattr(self._tui_console, '_pending_confirm_detail', '')
+        # Clean up
+        self._tui_console._pending_confirm_tool = None
+        self._tui_console._pending_confirm_detail = None
+
+        # Show the floating confirm panel
+        panel = self.query_one("#confirm_panel", ConfirmPanel)
+        panel.show_confirm(tool_name, detail)
+
+    def on_confirm_panel_answered(self, event: ConfirmPanel.Answered) -> None:
+        """Handle floating panel y/n/a answer."""
+        # Log the answer
         log = self.query_one("#messages", RichLog)
-        log.write(Text.from_ansi(prompt_text.rstrip()))
+        answer_map = {"y": "Accepted", "n": "Rejected", "a": "Always accept"}
+        label = answer_map.get(event.answer, event.answer)
+        color = {"y": "#57DB9C", "n": "#F85149", "a": "#7FA6D9"}.get(event.answer, "#8B949E")
+        answer_text = Text()
+        answer_text.append(f"  {label}", style=color)
+        log.write(answer_text)
 
-        # Switch ChatInput to confirm mode
-        chat_input = self.query_one("#input", ChatInput)
-        chat_input.placeholder = "(y)es / (n)o / (a)lways  [Enter = yes]"
-        chat_input.disabled = False
-        chat_input.focus()
+        # Re-focus chat input
+        self.query_one("#input", ChatInput).focus()
+
+        # Signal the worker thread
+        if self._confirm_result is not None:
+            self._confirm_result[0] = event.answer
+        if self._confirm_event is not None:
+            self._confirm_event.set()
+        self._confirm_event = None
+        self._confirm_result = None
 
     # ── Interactive selection (for /model, /skills, etc.) ──
 
