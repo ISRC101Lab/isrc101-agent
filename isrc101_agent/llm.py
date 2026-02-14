@@ -272,6 +272,22 @@ MODE_PROMPTS = {
         + "You are in read-only analysis mode. Do not modify files or execute shell commands. "
         + "Focus on explanation, diagnosis, and actionable suggestions."
     ),
+    "plan": (
+        BASE_SYSTEM_PROMPT
+        + "\n\n## Mode: PLANNING\n"
+        + "This is a planning request. DO NOT execute any actions yet.\n"
+        + "Instead, analyze the task and create a structured plan.\n\n"
+        + "## Plan Format:\n"
+        + "Output your plan in this exact format:\n\n"
+        + "## Plan: <brief title>\n"
+        + "1. [action] `target` — description\n"
+        + "2. [action] `target` — description\n"
+        + "...\n\n"
+        + "Actions can be: create, edit, delete, read, run, explore\n"
+        + "Target is the file path or command\n"
+        + "Keep plan to 3-8 steps. If simple task, say 'No plan needed - can execute directly.'\n\n"
+        + "After outputting the plan, wait for user confirmation before executing."
+    ),
 }
 
 

@@ -9,19 +9,18 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from textual.app import App, ComposeResult
-from textual.widgets import Header, RichLog
+from textual.widgets import RichLog
 from textual.worker import Worker, WorkerState
 from rich.text import Text
 
 from .console_adapter import TUIConsole
-from .widgets import ActivityBar, ChatInput, CommandPalette, ConfirmInput, SelectionInput, StatusBar
+from .widgets import ActivityBar, ChatInput, CommandPalette, ConfirmPanel, SelectionInput, StatusBar
 
 
 class ISRCApp(App):
     """Fullscreen TUI for isrc101-agent.
 
-    Layout:
-        Header          — title bar
+    Layout (no Header — mouse capture disabled for native text selection):
         RichLog         — scrollable message area
         ActivityBar     — live tool activity indicator (hidden when idle)
         CommandPalette  — slash-command autocomplete (hidden by default)
@@ -31,6 +30,9 @@ class ISRCApp(App):
 
     CSS_PATH = "app.tcss"
     TITLE = "isrc101-agent"
+
+    # Disable Textual's built-in command palette (we have our own CommandPalette widget)
+    ENABLE_COMMAND_PALETTE = False
 
     BINDINGS = [
         ("ctrl+c", "interrupt", "Interrupt"),
@@ -54,7 +56,7 @@ class ISRCApp(App):
         self._tui_console: Optional[TUIConsole] = None
         self._current_worker: Optional[Worker] = None
         self._pending_ctrl_d = False
-        # Confirm input state
+        # Confirm state (floating panel, no dynamic mount/unmount)
         self._confirm_event: Optional[threading.Event] = None
         self._confirm_result: Optional[list[str]] = None
         # Selection callback state
@@ -63,9 +65,10 @@ class ISRCApp(App):
     def compose(self) -> ComposeResult:
         from ..ui import SLASH_COMMAND_SPECS
 
-        yield Header()
+        # No Header — keeps UI minimal and avoids mouse capture
         yield RichLog(id="messages", highlight=True, markup=True, wrap=True)
         yield ActivityBar(id="activity")
+        yield ConfirmPanel(id="confirm_panel")
         yield CommandPalette(specs=SLASH_COMMAND_SPECS, id="command_palette")
         yield StatusBar(id="statusbar")
         yield ChatInput(id="input")
@@ -73,6 +76,18 @@ class ISRCApp(App):
     def on_mount(self) -> None:
         """Initialize TUI console adapter and render startup info."""
         self._tui_console = TUIConsole(self)
+
+        # Disable mouse tracking so terminal-native text selection works.
+        # Textual enables mouse reporting by default; we send ANSI escape
+        # sequences to turn it off.  All interaction is keyboard-driven.
+        import sys
+        sys.stdout.write(
+            "\x1b[?1000l"   # disable normal tracking
+            "\x1b[?1002l"   # disable button-event tracking
+            "\x1b[?1003l"   # disable any-event tracking
+            "\x1b[?1006l"   # disable SGR extended mode
+        )
+        sys.stdout.flush()
 
         # Inject TUI console into agent module
         from .. import agent as agent_mod
@@ -266,39 +281,23 @@ class ISRCApp(App):
         result_holder: list[str],
         result_event: threading.Event,
     ) -> None:
-        """Show confirm input and wait for answer (called in main thread)."""
+        """Show confirm prompt by reusing ChatInput in confirm mode.
+
+        No dynamic widget mounting — avoids Textual timer/lifecycle bugs.
+        """
         self._confirm_result = result_holder
         self._confirm_event = result_event
+        self._confirm_mode = True
 
         # Write prompt to log
         log = self.query_one("#messages", RichLog)
         log.write(Text.from_ansi(prompt_text.rstrip()))
 
-        # Hide chat input, show confirm input
+        # Switch ChatInput to confirm mode
         chat_input = self.query_one("#input", ChatInput)
-        chat_input.display = False
-
-        confirm = ConfirmInput(prompt_text=prompt_text, id="confirm_input")
-        self.mount(confirm)
-        confirm.focus()
-
-    def on_confirm_input_answered(self, event: ConfirmInput.Answered) -> None:
-        """Handle confirmation answer."""
-        try:
-            confirm = self.query_one("#confirm_input", ConfirmInput)
-            confirm.remove()
-        except Exception:
-            pass
-
-        chat_input = self.query_one("#input", ChatInput)
-        chat_input.display = True
-
-        if self._confirm_result is not None:
-            self._confirm_result[0] = event.answer
-        if self._confirm_event is not None:
-            self._confirm_event.set()
-        self._confirm_event = None
-        self._confirm_result = None
+        chat_input.placeholder = "(y)es / (n)o / (a)lways  [Enter = yes]"
+        chat_input.disabled = False
+        chat_input.focus()
 
     # ── Interactive selection (for /model, /skills, etc.) ──
 

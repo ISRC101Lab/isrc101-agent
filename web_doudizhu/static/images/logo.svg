@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#2a2a2a"/>
+      <stop offset="100%" style="stop-color:#1a1a1a"/>
+    </linearGradient>
+    <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#f0d060"/>
+      <stop offset="50%" style="stop-color:#d4af37"/>
+      <stop offset="100%" style="stop-color:#aa8c2c"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- 背景 -->
+  <rect x="5" y="5" width="90" height="90" rx="15" fill="url(#bgGrad)" stroke="#444" stroke-width="2"/>
+  
+  <!-- 王冠 -->
+  <path d="M25 55 L30 40 L40 45 L50 35 L60 45 L70 40 L75 55" 
+        fill="none" stroke="url(#goldGrad)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"/>
+  <path d="M25 55 L75 55" stroke="url(#goldGrad)" stroke-width="4" stroke-linecap="round" filter="url(#glow)"/>
+  
+  <!-- 宝石 -->
+  <circle cx="50" cy="65" r="8" fill="url(#goldGrad)" filter="url(#glow)"/>
+  <circle cx="35" cy="58" r="4" fill="#c41e3a"/>
+  <circle cx="65" cy="58" r="4" fill="#1a3a5c"/>
+  
+  <!-- 装饰线 -->
+  <line x1="20" y1="78" x2="80" y2="78" stroke="#444" stroke-width="1"/>
+</svg>

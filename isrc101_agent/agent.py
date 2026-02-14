@@ -69,6 +69,44 @@ _PLAN_STEP_RE = re.compile(r'(\d+)\.\s*\[(\w+)\]\s*`([^`]+)`\s*[—\-]\s*(.+)')
 
 __all__ = ["Agent", "Plan", "PlanStep"]
 
+# ── Complexity detection for planning ───────────────────
+_COMPLEX_KEYWORDS = [
+    # Chinese
+    "实现", "创建", "重构", "设计", "构建", "开发", "改造", "迁移",
+    "系统", "架构", "模块", "组件", "功能", "服务",
+    # English
+    "implement", "create", "refactor", "design", "build", "develop",
+    "system", "architecture", "module", "component", "feature", "service",
+    "migrate", "restructure", "rewrite", "integrate",
+]
+
+_COMPLEX_PATTERNS = [
+    r"多个?", r"若干", r"一套", r"一套",
+    r"multiple", r"several", r"set of", r"full",
+]
+
+
+def _is_complex_task(user_message: str) -> bool:
+    """Detect if a task is complex enough to require planning."""
+    msg_lower = user_message.lower()
+    
+    # Check keyword matches
+    keyword_count = sum(1 for kw in _COMPLEX_KEYWORDS if kw in user_message)
+    if keyword_count >= 2:
+        return True
+    
+    # Check patterns
+    for pattern in _COMPLEX_PATTERNS:
+        if re.search(pattern, msg_lower):
+            return True
+    
+    # Check for explicit planning requests
+    if re.search(r"计划|规划|plan|how to|步骤|steps", msg_lower):
+        return True
+    
+    return False
+
+
 # ── Visual theme (imported from rendering.py) ──────
 
 
@@ -257,6 +295,7 @@ class Agent:
             getattr(llm, 'context_window', 128000))
         normalized_mode = self._normalize_mode(chat_mode)
         self._mode = normalized_mode
+        self._planning_mode = False  # Flag for planning phase
         self.tools.mode = normalized_mode
         self.conversation: List[Dict[str, Any]] = []
         self.total_tokens = 0
@@ -283,7 +322,7 @@ class Agent:
         mode = str(value or "agent").strip().lower()
         if mode in ("code", "architect"):
             return "agent"
-        if mode not in ("agent", "ask"):
+        if mode not in ("agent", "ask", "plan"):
             return "agent"
         return mode
 
@@ -522,6 +561,19 @@ class Agent:
         _empty_streak = 0
         _MAX_EMPTY = 5
 
+        # Detect complex tasks and suggest planning mode
+        # Only if not already in planning mode and not a simple task
+        original_mode = self._mode
+        if (not self._planning_mode 
+            and original_mode == "agent"
+            and _is_complex_task(user_message)):
+            # Check if we have enough context (not a brand new conversation)
+            # and the task looks genuinely complex
+            self._planning_mode = True
+            self._mode = "plan"
+            self._print()
+            self._print(f"  [{_T_INFO}]▣[/{_T_INFO}] [{_T_DIM}]Complex task detected — entering planning mode[/{_T_DIM}]")
+
         base_system = build_system_prompt(
             self._mode,
             self.skill_instructions,
@@ -586,6 +638,11 @@ class Agent:
                 plan = self._try_parse_plan(finalized_content)
                 if plan:
                     self.current_plan = plan
+                    # If we were in planning mode, switch back to agent
+                    if self._planning_mode:
+                        self._planning_mode = False
+                        self._mode = "agent"
+                        self.tools.mode = "agent"
                     self._print()
                     self._print(f"  [{_T_INFO}]▣[/{_T_INFO}] [{_T_MUTED}]Plan parsed:[/{_T_MUTED}] "
                                   f"[bold {_T_TEXT}]{len(plan.steps)} steps[/bold {_T_TEXT}] "
@@ -953,6 +1010,12 @@ class Agent:
         """Try to parse a structured plan from LLM response."""
         title_match = _PLAN_TITLE_RE.search(content)
         if not title_match:
+            # Check if LLM said "no plan needed" while in planning mode
+            if self._planning_mode and re.search(r"no plan needed|不需要计划|直接执行|execute directly", content, re.IGNORECASE):
+                self._planning_mode = False
+                self._mode = "agent"
+                self.tools.mode = "agent"
+                self._print(f"  [{_T_INFO}]▣[/{_T_INFO}] [{_T_MUTED}]LLM says no plan needed — executing directly[/{_T_MUTED}]")
             return None
 
         title = title_match.group(1).strip()

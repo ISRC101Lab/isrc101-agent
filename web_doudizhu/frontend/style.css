@@ -1,3 +1,8 @@
+/* ========================================
+   斗地主 - 暗黑高级版
+   设计理念：黑灰奢华风，高级感
+   ======================================== */
+
 /* Reset and Base Styles */
 * {
     margin: 0;
@@ -5,46 +10,1099 @@
     box-sizing: border-box;
 }
 
-body {
-    font-family: 'Microsoft YaHei', 'SimHei', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    background: linear-gradient(135deg, #8B0000 0%, #B22222 50%, #8B0000 100%);
-    color: #fff;
-    min-height: 100vh;
-    overflow-x: hidden;
-    position: relative;
+:root {
+    /* 暗黑高级配色 */
+    --bg-dark: #0a0a0a;
+    --bg-dark-secondary: #141414;
+    --bg-card: #1a1a1a;
+    --bg-card-hover: #242424;
+    --bg-card-active: #2a2a2a;
+    
+    /* 边框和线条 */
+    --border-dark: #333333;
+    --border-light: #444444;
+    --border-accent: #555555;
+    
+    /* 文字颜色 */
+    --text-primary: #ffffff;
+    --text-secondary: #b0b0b0;
+    --text-muted: #666666;
+    --text-gold: #d4af37;
+    --text-silver: #c0c0c0;
+    
+    /* 主题色 - 暗金色 */
+    --accent-gold: #d4af37;
+    --accent-gold-light: #f0d060;
+    --accent-gold-dark: #aa8c2c;
+    --accent-gold-glow: rgba(212, 175, 55, 0.4);
+    
+    /* 主题色 - 暗银色 */
+    --accent-silver: #a8a8a8;
+    --accent-silver-light: #d0d0d0;
+    --accent-silver-dark: #787878;
+    
+    /* 地主 - 暗红色 */
+    --landlord-red: #8b0000;
+    --landlord-red-light: #b22222;
+    --landlord-red-glow: rgba(139, 0, 0, 0.5);
+    
+    /* 农民 - 暗蓝色 */
+    --farmer-blue: #1a3a5c;
+    --farmer-blue-light: #2a5080;
+    --farmer-blue-glow: rgba(26, 58, 92, 0.5);
+    
+    /* 卡牌尺寸 */
+    --card-width: 80px;
+    --card-height: 115px;
+    --card-radius: 8px;
+    --card-shadow: 0 4px 15px rgba(0, 0, 0, 0.6);
+    --card-shadow-hover: 0 12px 30px rgba(0, 0, 0, 0.7);
+    
+    /* 动画时间 */
+    --transition-fast: 0.15s ease;
+    --transition-normal: 0.3s ease;
+    --transition-slow: 0.5s ease;
 }
 
-/* Chinese pattern overlay */
-body::before {
+body {
+    font-family: 'Microsoft YaHei', 'PingFang SC', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: var(--bg-dark);
+    color: var(--text-primary);
+    min-height: 100vh;
+    overflow-x: hidden;
+    user-select: none;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* 游戏容器 - 暗黑奢华牌桌 */
+.game-container {
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    background: 
+        radial-gradient(ellipse at 50% 20%, #1a1a1a 0%, #0d0d0d 50%, #050505 100%);
+    overflow: hidden;
+}
+
+/* 奢华纹理背景 */
+.game-container::before {
     content: '';
     position: absolute;
     top: 0;
     left: 0;
-    width: 100%;
-    height: 100%;
-    background-image: radial-gradient(circle at 25% 25%, rgba(255, 204, 0, 0.05) 2px, transparent 2px),
-                      radial-gradient(circle at 75% 75%, rgba(255, 204, 0, 0.05) 2px, transparent 2px);
-    background-size: 60px 60px;
-    z-index: -1;
+    right: 0;
+    bottom: 0;
+    background-image: 
+        radial-gradient(circle at 10% 10%, rgba(212, 175, 55, 0.03) 1px, transparent 1px),
+        radial-gradient(circle at 90% 90%, rgba(212, 175, 55, 0.03) 1px, transparent 1px),
+        linear-gradient(45deg, transparent 48%, rgba(255,255,255,0.01) 49%, rgba(255,255,255,0.01) 51%, transparent 52%),
+        linear-gradient(-45deg, transparent 48%, rgba(255,255,255,0.01) 49%, rgba(255,255,255,0.01) 51%, transparent 52%);
+    background-size: 60px 60px, 60px 60px, 30px 30px, 30px 30px;
+    pointer-events: none;
+    z-index: 0;
 }
 
-.container {
-    max-width: 1400px;
-    margin: 0 auto;
-    padding: 20px;
+/* 边框装饰 */
+.game-container::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    border: 3px solid var(--border-dark);
+    border-radius: 12px;
+    pointer-events: none;
+    box-shadow: 
+        inset 0 0 50px rgba(0,0,0,0.5),
+        0 0 20px rgba(0,0,0,0.8);
 }
 
-/* Game Header */
-.game-header {
-    background: linear-gradient(to right, #8B0000, #B22222);
-    border-radius: 20px;
-    padding: 20px;
-    margin-bottom: 20px;
+/* ==================== 顶部信息栏 ==================== */
+.top-bar {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.5);
-    border: 4px solid #ffcc00;
+    padding: 12px 24px;
+    background: linear-gradient(180deg, rgba(26,26,26,0.95) 0%, rgba(20,20,20,0.9) 100%);
+    border-bottom: 1px solid var(--border-dark);
+    position: relative;
+    z-index: 100;
+    backdrop-filter: blur(10px);
+}
+
+.logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--accent-gold);
+    text-shadow: 0 0 10px var(--accent-gold-glow);
+    letter-spacing: 2px;
+}
+
+.logo i {
+    font-size: 26px;
+}
+
+.room-info {
+    display: flex;
+    gap: 20px;
+    color: var(--text-secondary);
+    font-size: 14px;
+}
+
+.room-info span {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: var(--bg-card);
+    border-radius: 20px;
+    border: 1px solid var(--border-dark);
+}
+
+.back-btn {
+    padding: 8px 20px;
+    background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg-dark-secondary) 100%);
+    border: 1px solid var(--border-light);
+    border-radius: 20px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 14px;
+    transition: all var(--transition-normal);
+}
+
+.back-btn:hover {
+    background: linear-gradient(135deg, var(--bg-card-hover) 0%, var(--bg-card) 100%);
+    border-color: var(--accent-gold);
+    color: var(--accent-gold);
+    box-shadow: 0 0 15px var(--accent-gold-glow);
+}
+
+/* ==================== 玩家位置 ==================== */
+.player-position {
+    position: absolute;
+    z-index: 10;
+}
+
+.player-left {
+    left: 20px;
+    top: 50%;
+    transform: translateY(-50%);
+}
+
+.player-right {
+    right: 20px;
+    top: 50%;
+    transform: translateY(-50%);
+}
+
+.player-bottom {
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+}
+
+/* 玩家信息框 - 暗黑风格 */
+.player-avatar-box {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg-dark-secondary) 100%);
+    border: 1px solid var(--border-dark);
+    border-radius: 12px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    transition: all var(--transition-normal);
+}
+
+.player-avatar-box::before {
+    content: '';
+    position: absolute;
+    top: -1px;
+    left: 20%;
+    right: 20%;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--accent-gold), transparent);
+    opacity: 0;
+    transition: opacity var(--transition-normal);
+}
+
+.player-avatar-box.active::before {
+    opacity: 1;
+}
+
+.player-avatar-box.active {
+    border-color: var(--accent-gold);
+    box-shadow: 
+        0 4px 20px rgba(0,0,0,0.5),
+        0 0 20px var(--accent-gold-glow);
+}
+
+.avatar {
+    width: 50px;
+    height: 50px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--bg-card-hover) 0%, var(--bg-dark-secondary) 100%);
+    border: 2px solid var(--border-light);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    color: var(--text-muted);
     position: relative;
     overflow: hidden;
+}
+
+.avatar.landlord {
+    border-color: var(--landlord-red);
+    color: var(--landlord-red-light);
+    box-shadow: 0 0 15px var(--landlord-red-glow);
+}
+
+.avatar.farmer {
+    border-color: var(--farmer-blue);
+    color: var(--farmer-blue-light);
+    box-shadow: 0 0 15px var(--farmer-blue-glow);
+}
+
+.player-info-text {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.player-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.player-cards-count {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.player-cards-count .count {
+    color: var(--accent-gold);
+    font-weight: 700;
+}
+
+/* 对手手牌 - 背面 */
+.opponent-cards {
+    display: flex;
+    gap: -30px;
+    margin-top: 8px;
+}
+
+.opponent-cards .card-back,
+.opponent-cards .opponent-card-back {
+    width: 40px;
+    height: 56px;
+    background: linear-gradient(135deg, #2a2a2a 0%, #1a1a1a 100%);
+    border: 1px solid var(--border-light);
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    margin-left: -25px;
+    position: relative;
+}
+
+.opponent-cards .card-back:first-child,
+.opponent-cards .opponent-card-back:first-child {
+    margin-left: 0;
+}
+
+.opponent-cards .card-back::after,
+.opponent-cards .opponent-card-back::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 30px;
+    height: 40px;
+    border: 1px solid var(--border-dark);
+    border-radius: 2px;
+    background: repeating-linear-gradient(
+        45deg,
+        transparent,
+        transparent 3px,
+        rgba(255,255,255,0.02) 3px,
+        rgba(255,255,255,0.02) 6px
+    );
+}
+
+/* ==================== 倍率显示 ==================== */
+.multiplier-display {
+    position: absolute;
+    top: 80px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 20px;
+    background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg-dark-secondary) 100%);
+    border: 1px solid var(--accent-gold);
+    border-radius: 25px;
+    box-shadow: 0 0 20px var(--accent-gold-glow);
+    z-index: 20;
+}
+
+.multiplier-display i {
+    color: var(--accent-gold);
+    font-size: 18px;
+    animation: pulse-glow 2s infinite;
+}
+
+@keyframes pulse-glow {
+    0%, 100% { opacity: 1; text-shadow: 0 0 5px var(--accent-gold); }
+    50% { opacity: 0.7; text-shadow: 0 0 15px var(--accent-gold); }
+}
+
+.multiplier-display span {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--accent-gold);
+}
+
+.multiplier-display .times {
+    font-size: 14px;
+    color: var(--text-secondary);
+}
+
+/* ==================== 中央出牌区域 ==================== */
+.play-area {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+    z-index: 5;
+}
+
+.landlord-cards-area {
+    display: flex;
+    gap: 8px;
+    padding: 12px 20px;
+    background: rgba(20, 20, 20, 0.8);
+    border: 1px solid var(--border-dark);
+    border-radius: 12px;
+    position: relative;
+}
+
+.landlord-cards-area .landlord-label {
+    position: absolute;
+    top: -10px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 12px;
+    color: var(--landlord-red);
+    background: var(--bg-dark);
+    padding: 2px 10px;
+    border-radius: 10px;
+    border: 1px solid var(--landlord-red);
+}
+
+.current-play-cards {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 130px;
+    min-width: 200px;
+}
+
+.play-label {
+    font-size: 16px;
+    color: var(--text-muted);
+    padding: 8px 24px;
+    background: var(--bg-card);
+    border-radius: 20px;
+    border: 1px solid var(--border-dark);
+}
+
+.last-player-info {
+    font-size: 14px;
+    color: var(--text-secondary);
+}
+
+/* ==================== 自己的手牌区域 ==================== */
+.my-hand-area {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 15px;
+}
+
+.card-type-label {
+    font-size: 14px;
+    color: var(--accent-gold);
+    min-height: 20px;
+}
+
+.my-cards-container {
+    display: flex;
+    justify-content: center;
+    gap: 2px;
+    padding: 15px 30px;
+    background: linear-gradient(180deg, rgba(20,20,20,0.9) 0%, rgba(10,10,10,0.95) 100%);
+    border: 1px solid var(--border-dark);
+    border-radius: 16px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+}
+
+/* 卡牌样式 */
+.card {
+    width: var(--card-width);
+    height: var(--card-height);
+    background: linear-gradient(145deg, #f5f5f5 0%, #e8e8e8 100%);
+    border-radius: var(--card-radius);
+    box-shadow: var(--card-shadow);
+    position: relative;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 6px;
+    user-select: none;
+}
+
+.card:hover {
+    transform: translateY(-15px);
+    box-shadow: var(--card-shadow-hover);
+}
+
+.card.selected {
+    transform: translateY(-20px);
+    box-shadow: 0 15px 35px rgba(212, 175, 55, 0.4);
+    border: 2px solid var(--accent-gold);
+}
+
+/* 卡牌背面 */
+.card-back {
+    width: var(--card-width);
+    height: var(--card-height);
+    background: linear-gradient(135deg, #2a2a2a 0%, #1a1a1a 100%);
+    border: 2px solid var(--border-light);
+    border-radius: var(--card-radius);
+    box-shadow: var(--card-shadow);
+    position: relative;
+    overflow: hidden;
+}
+
+.card-back::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: 
+        repeating-linear-gradient(
+            45deg,
+            transparent,
+            transparent 8px,
+            rgba(212, 175, 55, 0.05) 8px,
+            rgba(212, 175, 55, 0.05) 16px
+        );
+}
+
+.card-back::after {
+    content: '♠';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 32px;
+    color: var(--accent-gold);
+    opacity: 0.3;
+}
+
+/* 卡牌点数 */
+.card-value {
+    font-size: 20px;
+    font-weight: 800;
+    line-height: 1;
+}
+
+.card-value.red {
+    color: #c41e3a;
+}
+
+.card-value.black {
+    color: #1a1a1a;
+}
+
+/* 卡牌花色 */
+.card-suit {
+    font-size: 22px;
+    text-align: center;
+}
+
+.card-suit.red {
+    color: #c41e3a;
+}
+
+.card-suit.black {
+    color: #1a1a1a;
+}
+
+.card-suit.large {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 48px;
+    opacity: 0.15;
+}
+
+/* ==================== 操作按钮区域 ==================== */
+.action-area {
+    display: flex;
+    gap: 15px;
+    align-items: center;
+}
+
+/* 叫地主按钮 */
+.bid-buttons {
+    display: none;
+    gap: 12px;
+}
+
+.bid-buttons.show {
+    display: flex;
+}
+
+.bid-btn {
+    padding: 12px 28px;
+    font-size: 16px;
+    font-weight: 600;
+    border: none;
+    border-radius: 25px;
+    cursor: pointer;
+    transition: all var(--transition-normal);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.bid-btn.call {
+    background: linear-gradient(135deg, var(--landlord-red-light) 0%, var(--landlord-red) 100%);
+    color: white;
+    box-shadow: 0 4px 15px var(--landlord-red-glow);
+}
+
+.bid-btn.call:hover {
+    transform: scale(1.05);
+    box-shadow: 0 6px 25px var(--landlord-red-glow);
+}
+
+.bid-btn.bid-2x {
+    background: linear-gradient(135deg, var(--accent-gold-light) 0%, var(--accent-gold-dark) 100%);
+    color: #1a1a1a;
+    box-shadow: 0 4px 15px var(--accent-gold-glow);
+}
+
+.bid-btn.bid-2x:hover {
+    transform: scale(1.05);
+    box-shadow: 0 6px 25px var(--accent-gold-glow);
+}
+
+.bid-btn.pass {
+    background: linear-gradient(135deg, var(--bg-card-hover) 0%, var(--bg-dark-secondary) 100%);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-light);
+}
+
+.bid-btn.pass:hover {
+    background: linear-gradient(135deg, #3a3a3a 0%, #2a2a2a 100%);
+    color: var(--text-primary);
+}
+
+/* 出牌按钮 */
+.play-buttons {
+    display: none;
+    gap: 12px;
+}
+
+.play-buttons.show {
+    display: flex;
+}
+
+.play-btn {
+    padding: 12px 24px;
+    font-size: 15px;
+    font-weight: 600;
+    border: none;
+    border-radius: 25px;
+    cursor: pointer;
+    transition: all var(--transition-normal);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.play-btn.confirm {
+    background: linear-gradient(135deg, var(--accent-gold-light) 0%, var(--accent-gold-dark) 100%);
+    color: #1a1a1a;
+    box-shadow: 0 4px 15px var(--accent-gold-glow);
+}
+
+.play-btn.confirm:hover {
+    transform: scale(1.05);
+    box-shadow: 0 6px 25px var(--accent-gold-glow);
+}
+
+.play-btn.pass {
+    background: linear-gradient(135deg, var(--bg-card-hover) 0%, var(--bg-dark-secondary) 100%);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-light);
+}
+
+.play-btn.pass:hover {
+    background: linear-gradient(135deg, #3a3a3a 0%, #2a2a2a 100%);
+    color: var(--text-primary);
+}
+
+.play-btn.hint {
+    background: linear-gradient(135deg, var(--farmer-blue-light) 0%, var(--farmer-blue) 100%);
+    color: white;
+    box-shadow: 0 4px 15px var(--farmer-blue-glow);
+}
+
+.play-btn.hint:hover {
+    transform: scale(1.05);
+    box-shadow: 0 6px 25px var(--farmer-blue-glow);
+}
+
+.play-btn.sort {
+    background: linear-gradient(135deg, var(--bg-card-hover) 0%, var(--bg-dark-secondary) 100%);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-light);
+}
+
+.play-btn.sort:hover {
+    background: linear-gradient(135deg, #3a3a3a 0%, #2a2a2a 100%);
+    color: var(--text-primary);
+}
+
+/* 等待提示 */
+.waiting-indicator {
+    display: none;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 24px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-dark);
+    border-radius: 25px;
+    color: var(--text-muted);
+}
+
+.waiting-indicator.show {
+    display: flex;
+}
+
+.waiting-indicator i {
+    animation: spin 1.5s linear infinite;
+}
+
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+/* ==================== 聊天面板 ==================== */
+.chat-panel {
+    position: fixed;
+    right: 20px;
+    bottom: 20px;
+    width: 320px;
+    background: linear-gradient(180deg, var(--bg-card) 0%, var(--bg-dark-secondary) 100%);
+    border: 1px solid var(--border-dark);
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+    z-index: 1000;
+    overflow: hidden;
+    transition: all var(--transition-normal);
+}
+
+.chat-panel.collapsed {
+    height: 50px;
+}
+
+.chat-panel.collapsed .chat-messages,
+.chat-panel.collapsed .chat-input {
+    display: none;
+}
+
+.chat-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-dark);
+    background: var(--bg-card-hover);
+}
+
+.chat-header h3 {
+    font-size: 14px;
+    color: var(--accent-gold);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.chat-messages {
+    height: 200px;
+    overflow-y: auto;
+    padding: 12px;
+}
+
+.chat-message {
+    margin-bottom: 8px;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.chat-message .sender {
+    color: var(--accent-gold);
+    font-weight: 600;
+}
+
+.chat-message .content {
+    color: var(--text-secondary);
+}
+
+.chat-input {
+    display: flex;
+    gap: 8px;
+    padding: 12px;
+    border-top: 1px solid var(--border-dark);
+}
+
+.chat-input input {
+    flex: 1;
+    padding: 8px 12px;
+    background: var(--bg-dark);
+    border: 1px solid var(--border-dark);
+    border-radius: 20px;
+    color: var(--text-primary);
+    font-size: 13px;
+}
+
+.chat-input input:focus {
+    outline: none;
+    border-color: var(--accent-gold);
+}
+
+.chat-input button {
+    padding: 8px 16px;
+    background: var(--accent-gold);
+    border: none;
+    border-radius: 20px;
+    color: #1a1a1a;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.chat-input button:hover {
+    background: var(--accent-gold-light);
+}
+
+/* ==================== 房间创建/加入面板 ==================== */
+.room-panel {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.9);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+    backdrop-filter: blur(10px);
+}
+
+.room-panel.hidden {
+    display: none;
+}
+
+.room-panel-content {
+    width: 400px;
+    padding: 40px;
+    background: linear-gradient(180deg, var(--bg-card) 0%, var(--bg-dark-secondary) 100%);
+    border: 1px solid var(--border-dark);
+    border-radius: 20px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.8);
+}
+
+.room-panel h2 {
+    text-align: center;
+    font-size: 28px;
+    color: var(--accent-gold);
+    margin-bottom: 30px;
+    text-shadow: 0 0 20px var(--accent-gold-glow);
+}
+
+.room-panel .input-group {
+    margin-bottom: 20px;
+}
+
+.room-panel label {
+    display: block;
+    margin-bottom: 8px;
+    color: var(--text-secondary);
+    font-size: 14px;
+}
+
+.room-panel input {
+    width: 100%;
+    padding: 14px 16px;
+    background: var(--bg-dark);
+    border: 1px solid var(--border-dark);
+    border-radius: 10px;
+    color: var(--text-primary);
+    font-size: 16px;
+    transition: all var(--transition-fast);
+}
+
+.room-panel input:focus {
+    outline: none;
+    border-color: var(--accent-gold);
+    box-shadow: 0 0 15px var(--accent-gold-glow);
+}
+
+.room-panel .btn-group {
+    display: flex;
+    gap: 15px;
+    margin-top: 30px;
+}
+
+.room-panel .btn {
+    flex: 1;
+    padding: 14px;
+    font-size: 16px;
+    font-weight: 600;
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all var(--transition-normal);
+}
+
+.room-panel .btn-primary {
+    background: linear-gradient(135deg, var(--accent-gold-light) 0%, var(--accent-gold-dark) 100%);
+    color: #1a1a1a;
+}
+
+.room-panel .btn-primary:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px var(--accent-gold-glow);
+}
+
+.room-panel .btn-secondary {
+    background: var(--bg-card-hover);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-light);
+}
+
+.room-panel .btn-secondary:hover {
+    background: #3a3a3a;
+    color: var(--text-primary);
+}
+
+/* ==================== 游戏结果弹窗 ==================== */
+.game-result {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.9);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+    backdrop-filter: blur(10px);
+}
+
+.game-result.show {
+    display: flex;
+}
+
+.result-content {
+    width: 450px;
+    padding: 40px;
+    background: linear-gradient(180deg, var(--bg-card) 0%, var(--bg-dark-secondary) 100%);
+    border: 2px solid var(--accent-gold);
+    border-radius: 20px;
+    text-align: center;
+    box-shadow: 0 0 50px var(--accent-gold-glow);
+}
+
+.result-content h2 {
+    font-size: 36px;
+    margin-bottom: 20px;
+}
+
+.result-content.win h2 {
+    color: var(--accent-gold);
+    text-shadow: 0 0 30px var(--accent-gold-glow);
+}
+
+.result-content.lose h2 {
+    color: var(--landlord-red);
+    text-shadow: 0 0 30px var(--landlord-red-glow);
+}
+
+.result-content .score-change {
+    font-size: 28px;
+    color: var(--accent-gold);
+    margin: 20px 0;
+}
+
+.result-content .details {
+    margin: 30px 0;
+    color: var(--text-secondary);
+}
+
+.result-content .btn {
+    padding: 14px 40px;
+    font-size: 16px;
+    font-weight: 600;
+    background: linear-gradient(135deg, var(--accent-gold-light) 0%, var(--accent-gold-dark) 100%);
+    color: #1a1a1a;
+    border: none;
+    border-radius: 25px;
+    cursor: pointer;
+    transition: all var(--transition-normal);
+}
+
+.result-content .btn:hover {
+    transform: scale(1.05);
+    box-shadow: 0 8px 25px var(--accent-gold-glow);
+}
+
+/* ==================== 动画效果 ==================== */
+
+/* 思考中动画 */
+.thinking {
+    position: relative;
+}
+
+.thinking::after {
+    content: '';
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    width: 12px;
+    height: 12px;
+    background: var(--accent-gold);
+    border-radius: 50%;
+    animation: thinking-pulse 1s infinite;
+}
+
+@keyframes thinking-pulse {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.3); opacity: 0.7; }
+}
+
+/* 出牌动画 */
+.card.playing {
+    animation: card-play 0.5s ease-out forwards;
+}
+
+@keyframes card-play {
+    0% { transform: translateY(0); opacity: 1; }
+    100% { transform: translateY(-100px); opacity: 0; }
+}
+
+/* 卡牌飞向桌面 */
+.card.fly-to-table {
+    animation: fly-to-table 0.4s ease-out;
+}
+
+@keyframes fly-to-table {
+    0% { transform: translateY(0) scale(1); }
+    50% { transform: translateY(-50px) scale(0.9); }
+    100% { transform: translateY(-20px) scale(0.85); }
+}
+
+/* 胜利/失败特效 */
+.win-effect {
+    animation: win-glow 1s ease-in-out infinite;
+}
+
+@keyframes win-glow {
+    0%, 100% { box-shadow: 0 0 20px var(--accent-gold-glow); }
+    50% { box-shadow: 0 0 40px var(--accent-gold-glow), 0 0 60px var(--accent-gold-glow); }
+}
+
+.lose-effect {
+    animation: lose-shake 0.5s ease-in-out;
+}
+
+@keyframes lose-shake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-10px); }
+    75% { transform: translateX(10px); }
+}
+
+/* 滚动条样式 */
+::-webkit-scrollbar {
+    width: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--bg-dark);
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--border-light);
+    border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--accent-gold-dark);
+}
+
+/* 响应式设计 */
+@media (max-width: 1200px) {
+    :root {
+        --card-width: 70px;
+        --card-height: 100px;
+    }
+}
+
+@media (max-width: 900px) {
+    :root {
+        --card-width: 60px;
+        --card-height: 85px;
+    }
+    
+    .top-bar {
+        padding: 10px 15px;
+    }
+    
+    .logo {
+        font-size: 18px;
+    }
+    
+    .room-info {
+        gap: 10px;
+        font-size: 12px;
+    }
+    
+    .play-btn, .bid-btn {
+        padding: 10px 18px;
+        font-size: 14px;
+    }
 }

@@ -5,13 +5,6 @@ Screen {
     background: #0D1117;
 }
 
-Header {
-    dock: top;
-    background: #161B22;
-    color: #7FA6D9;
-    height: 1;
-}
-
 #messages {
     background: #0D1117;
     color: #E6EDF3;
@@ -72,18 +65,6 @@ ChatInput:focus {
 
 ChatInput.-disabled {
     opacity: 0.5;
-}
-
-ConfirmInput {
-    dock: bottom;
-    background: #161B22;
-    border-top: solid #E3B341;
-    border-bottom: none;
-    border-left: none;
-    border-right: none;
-    height: 3;
-    padding: 0 1;
-    color: #E6EDF3;
 }
 
 SelectionInput {

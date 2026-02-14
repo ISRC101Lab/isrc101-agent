@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="robotBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#3a3a3a"/>
+      <stop offset="100%" style="stop-color:#2a2a2a"/>
+    </linearGradient>
+    <linearGradient id="cyanGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#60d0d0"/>
+      <stop offset="100%" style="stop-color:#408080"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- 头像背景 -->
+  <circle cx="50" cy="50" r="45" fill="url(#robotBg)" stroke="#555" stroke-width="2"/>
+  
+  <!-- 机器人头部 -->
+  <rect x="28" y="25" width="44" height="35" rx="8" fill="none" stroke="url(#cyanGrad)" stroke-width="3"/>
+  
+  <!-- 眼睛 -->
+  <circle cx="40" cy="40" r="6" fill="url(#cyanGrad)"/>
+  <circle cx="60" cy="40" r="6" fill="url(#cyanGrad)"/>
+  
+  <!-- 天线 -->
+  <line x1="50" y1="25" x2="50" y2="15" stroke="url(#cyanGrad)" stroke-width="2"/>
+  <circle cx="50" cy="12" r="4" fill="url(#cyanGrad)"/>
+  
+  <!-- 嘴巴/笑脸 -->
+  <path d="M40 52 Q50 58 60 52" fill="none" stroke="url(#cyanGrad)" stroke-width="2" stroke-linecap="round"/>
+  
+  <!-- 科技装饰 -->
+  <circle cx="50" cy="50" r="38" fill="none" stroke="url(#cyanGrad)" stroke-width="1" opacity="0.3"/>
+</svg>

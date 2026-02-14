@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>斗地主 - 暗黑奢华版</title>
+    <link rel="icon" href="/static/images/logo.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        /* 首页专用样式 */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-dark: #0a0a0a;
+            --bg-dark-secondary: #141414;
+            --bg-card: #1a1a1a;
+            --bg-card-hover: #242424;
+            --border-dark: #333333;
+            --border-light: #444444;
+            --accent-gold: #d4af37;
+            --accent-gold-light: #f0d060;
+            --accent-gold-dark: #aa8c2c;
+            --accent-gold-glow: rgba(212, 175, 55, 0.4);
+            --text-primary: #ffffff;
+            --text-secondary: #b0b0b0;
+            --text-muted: #666666;
+        }
+
+        body {
+            font-family: 'Microsoft YaHei', 'PingFang SC', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #050505;
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+
+        /* 背景效果 */
+        .bg-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: 
+                radial-gradient(ellipse at 20% 20%, rgba(212, 175, 55, 0.05) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 80%, rgba(212, 175, 55, 0.05) 0%, transparent 50%),
+                linear-gradient(180deg, #0a0a0a 0%, #050505 100%);
+            z-index: -1;
+        }
+
+        .bg-pattern {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-image: 
+                radial-gradient(circle at 10% 10%, rgba(255,255,255,0.02) 1px, transparent 1px),
+                radial-gradient(circle at 90% 90%, rgba(255,255,255,0.02) 1px, transparent 1px);
+            background-size: 50px 50px;
+            z-index: -1;
+        }
+
+        /* 主容器 */
+        .landing-container {
+            text-align: center;
+            padding: 40px;
+            max-width: 500px;
+            width: 100%;
+        }
+
+        /* Logo */
+        .logo-section {
+            margin-bottom: 50px;
+        }
+
+        .logo-icon {
+            width: 120px;
+            height: 120px;
+            margin: 0 auto 20px;
+            animation: float 3s ease-in-out infinite;
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-10px); }
+        }
+
+        .logo-title {
+            font-size: 48px;
+            font-weight: 800;
+            background: linear-gradient(135deg, var(--accent-gold-light) 0%, var(--accent-gold) 50%, var(--accent-gold-dark) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            text-shadow: 0 0 40px var(--accent-gold-glow);
+            letter-spacing: 8px;
+        }
+
+        .logo-subtitle {
+            font-size: 14px;
+            color: var(--text-muted);
+            letter-spacing: 4px;
+            margin-top: 10px;
+        }
+
+        /* 按钮组 */
+        .button-group {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .btn {
+            padding: 18px 40px;
+            font-size: 18px;
+            font-weight: 600;
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            text-decoration: none;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent-gold-light) 0%, var(--accent-gold-dark) 100%);
+            color: #0a0a0a;
+            box-shadow: 0 4px 20px var(--accent-gold-glow);
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 8px 30px var(--accent-gold-glow);
+        }
+
+        .btn-secondary {
+            background: linear-gradient(135deg, var(--bg-card-hover) 0%, var(--bg-dark-secondary) 100%);
+            color: var(--text-secondary);
+            border: 1px solid var(--border-light);
+        }
+
+        .btn-secondary:hover {
+            background: #2a2a2a;
+            color: var(--text-primary);
+            border-color: var(--accent-gold);
+        }
+
+        /* 输入框 */
+        .input-section {
+            margin-top: 30px;
+            display: none;
+        }
+
+        .input-section.show {
+            display: block;
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .input-group {
+            margin-bottom: 15px;
+        }
+
+        .input-group label {
+            display: block;
+            text-align: left;
+            margin-bottom: 8px;
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+
+        .input-group input {
+            width: 100%;
+            padding: 14px 20px;
+            font-size: 16px;
+            background: var(--bg-dark);
+            border: 1px solid var(--border-dark);
+            border-radius: 30px;
+            color: var(--text-primary);
+            transition: all 0.3s ease;
+        }
+
+        .input-group input:focus {
+            outline: none;
+            border-color: var(--accent-gold);
+            box-shadow: 0 0 20px var(--accent-gold-glow);
+        }
+
+        .button-row {
+            display: flex;
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .button-row .btn {
+            flex: 1;
+        }
+
+        /* 底部信息 */
+        .footer-info {
+            position: fixed;
+            bottom: 30px;
+            color: var(--text-muted);
+            font-size: 12px;
+        }
+
+        /* 卡牌装饰 */
+        .card-decorations {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: -1;
+            opacity: 0.03;
+        }
+
+        .card-decorations span {
+            position: absolute;
+            font-size: 80px;
+        }
+
+        .card-decorations span:nth-child(1) { top: 10%; left: 10%; transform: rotate(-15deg); }
+        .card-decorations span:nth-child(2) { top: 20%; right: 15%; transform: rotate(20deg); }
+        .card-decorations span:nth-child(3) { bottom: 20%; left: 15%; transform: rotate(10deg); }
+        .card-decorations span:nth-child(4) { bottom: 15%; right: 10%; transform: rotate(-10deg); }
+    </style>
+</head>
+<body>
+    <div class="bg-overlay"></div>
+    <div class="bg-pattern"></div>
+    
+    <div class="card-decorations">
+        <span>♠</span>
+        <span>♥</span>
+        <span>♣</span>
+        <span>♦</span>
+    </div>
+
+    <div class="landing-container">
+        <div class="logo-section">
+            <img src="/static/images/logo.svg" alt="Logo" class="logo-icon">
+            <h1 class="logo-title">斗地主</h1>
+            <p class="logo-subtitle">DOUDIZHU</p>
+        </div>
+
+        <div class="button-group" id="main-buttons">
+            <button class="btn btn-primary" onclick="showJoinSection()">
+                <i class="fas fa-sign-in-alt"></i>
+                加入游戏
+            </button>
+            <button class="btn btn-secondary" onclick="createRoom()">
+                <i class="fas fa-plus-circle"></i>
+                创建房间
+            </button>
+        </div>
+
+        <div class="input-section" id="join-section">
+            <h2 style="margin-bottom: 20px; color: var(--accent-gold);">加入游戏</h2>
+            <div class="input-group">
+                <label>房间号</label>
+                <input type="text" id="room-code" placeholder="请输入房间号">
+            </div>
+            <div class="input-group">
+                <label>你的名字</label>
+                <input type="text" id="player-name" placeholder="请输入你的名字" maxlength="10">
+            </div>
+            <div class="button-row">
+                <button class="btn btn-secondary" onclick="hideJoinSection()">返回</button>
+                <button class="btn btn-primary" onclick="joinRoom()">加入</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="footer-info">
+        暗黑奢华版 · 享受经典纸牌游戏
+    </div>
+
+    <script>
+        function showJoinSection() {
+            document.getElementById('main-buttons').style.display = 'none';
+            document.getElementById('join-section').classList.add('show');
+        }
+
+        function hideJoinSection() {
+            document.getElementById('join-section').classList.remove('show');
+            document.getElementById('main-buttons').style.display = 'flex';
+        }
+
+        function generateRoomId() {
+            return Math.random().toString(36).substring(2, 8).toUpperCase();
+        }
+
+        function createRoom() {
+            const roomId = generateRoomId();
+            window.location.href = `/frontend?room=${roomId}&name=玩家`;
+        }
+
+        function joinRoom() {
+            const roomId = document.getElementById('room-code').value.trim();
+            const playerName = document.getElementById('player-name').value.trim() || '玩家';
+            
+            if (!roomId) {
+                alert('请输入房间号');
+                return;
+            }
+            
+            window.location.href = `/frontend?room=${roomId}&name=${encodeURIComponent(playerName)}`;
+        }
+    </script>
+</body>
+</html>

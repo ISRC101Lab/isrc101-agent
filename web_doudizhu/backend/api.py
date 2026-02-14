@@ -14,7 +14,7 @@ import asyncio
 import os
 from datetime import datetime
 
-from .game import GameState, GameManager, PlayerRole
+from .game import GameState, GameManager, PlayerRole, GamePhase
 from .ai import AIPlayerFactory
 from .scoring import ScoringSystem
 
@@ -111,14 +111,44 @@ async def health_check():
     }
 
 
+@app.get("/")
+async def serve_landing():
+    """首页 - 登录页面"""
+    landing_path = os.path.join(os.path.dirname(__file__), "..", "frontend", "landing.html")
+    if os.path.exists(landing_path):
+        return FileResponse(landing_path)
+    else:
+        raise HTTPException(status_code=404, detail="登录页面未找到")
+
+
+@app.get("/landing")
+async def serve_landing():
+    """登录页面"""
+    landing_path = os.path.join(os.path.dirname(__file__), "..", "frontend", "landing.html")
+    if os.path.exists(landing_path):
+        return FileResponse(landing_path)
+    else:
+        raise HTTPException(status_code=404, detail="登录页面未找到")
+
+
 @app.get("/frontend")
 async def serve_frontend():
-    """提供前端界面"""
+    """游戏界面"""
     frontend_path = os.path.join(os.path.dirname(__file__), "..", "frontend", "index.html")
     if os.path.exists(frontend_path):
         return FileResponse(frontend_path)
     else:
         raise HTTPException(status_code=404, detail="前端文件未找到")
+
+
+@app.get("/waiting")
+async def serve_waiting():
+    """提供等待页面"""
+    waiting_path = os.path.join(os.path.dirname(__file__), "..", "frontend", "waiting.html")
+    if os.path.exists(waiting_path):
+        return FileResponse(waiting_path)
+    else:
+        raise HTTPException(status_code=404, detail="等待页面未找到")
 
 
 @app.get("/api/rooms")
@@ -183,12 +213,16 @@ async def add_ai_player(room_id: str, request: AddAIRequest):
     # 创建AI玩家
     ai_player = AIPlayerFactory.create_ai(request.ai_type, ai_id, ai_name)
     
-    # 添加AI玩家到游戏
-    game.add_player(ai_id, ai_name)
+    # 添加AI玩家到游戏（保存AI类型以便后续使用）
+    game.add_player(ai_id, ai_name, request.ai_type)
     
-    # 如果是第三个玩家，自动开始游戏
+    # 如果是第三个玩家，自动开始游戏（直接进入打牌阶段，跳过叫地主）
     if len(game.players) == 3:
-        game.start_game()
+        game.start_game(skip_bidding=True)
+
+        # 如果当前玩家是AI，触发AI出牌
+        if game.current_player and game.current_player.startswith("ai_"):
+            await _handle_ai_turn(game, room_id)
     
     return {
         "ai_id": ai_id,
@@ -208,7 +242,7 @@ async def get_room_info(room_id: str):
     return game.to_dict()
 
 
-@app.post("/rooms/{room_id}/bid")
+@app.post("/rooms/{room_id}/bid/{player_id}")
 async def bid(room_id: str, player_id: str, request: BidRequest):
     """叫地主"""
     game = game_manager.get_game(room_id)
@@ -223,13 +257,17 @@ async def bid(room_id: str, player_id: str, request: BidRequest):
     if not success:
         raise HTTPException(status_code=400, detail="叫地主失败")
     
+    # 如果是AI玩家，自动进行下一步
+    if game.current_player and game.current_player.startswith("ai_"):
+        await _handle_ai_turn(game, room_id)
+    
     # 通知所有连接的客户端
     await _broadcast_game_state(room_id, game)
     
     return {"success": True, "message": "叫地主成功"}
 
 
-@app.post("/rooms/{room_id}/play")
+@app.post("/rooms/{room_id}/play/{player_id}")
 async def play_cards(room_id: str, player_id: str, request: PlayCardsRequest):
     """出牌"""
     game = game_manager.get_game(room_id)
@@ -240,21 +278,21 @@ async def play_cards(room_id: str, player_id: str, request: PlayCardsRequest):
         raise HTTPException(status_code=404, detail="玩家不在房间中")
     
     success = game.play_cards(player_id, request.card_indices)
-    
+
     if not success:
         raise HTTPException(status_code=400, detail="出牌失败")
-    
-    # 如果是AI玩家，自动进行下一步
-    if player_id.startswith("ai_"):
+
+    # 检查下一个玩家是否是AI，如果是则触发AI回合
+    if game.current_player and game.current_player.startswith("ai_"):
         await _handle_ai_turn(game, room_id)
-    
+
     # 通知所有连接的客户端
     await _broadcast_game_state(room_id, game)
     
     return {"success": True, "message": "出牌成功"}
 
 
-@app.post("/rooms/{room_id}/pass")
+@app.post("/rooms/{room_id}/pass/{player_id}")
 async def pass_turn(room_id: str, player_id: str):
     """过牌"""
     game = game_manager.get_game(room_id)
@@ -265,14 +303,14 @@ async def pass_turn(room_id: str, player_id: str):
         raise HTTPException(status_code=404, detail="玩家不在房间中")
     
     success = game.pass_turn(player_id)
-    
+
     if not success:
         raise HTTPException(status_code=400, detail="过牌失败")
-    
-    # 如果是AI玩家，自动进行下一步
-    if player_id.startswith("ai_"):
+
+    # 检查下一个玩家是否是AI，如果是则触发AI回合
+    if game.current_player and game.current_player.startswith("ai_"):
         await _handle_ai_turn(game, room_id)
-    
+
     # 通知所有连接的客户端
     await _broadcast_game_state(room_id, game)
     
@@ -394,19 +432,34 @@ async def _broadcast_message(room_id: str, message: Dict):
 
 async def _handle_ai_turn(game: GameState, room_id: str):
     """处理AI玩家的回合"""
-    if game.phase.value == "叫地主" and game.current_player.startswith("ai_"):
+    # 检查是否是AI玩家的回合
+    if not game.current_player or not game.current_player.startswith("ai_"):
+        return
+    
+    # 获取当前AI玩家的类型
+    current_player_obj = game.players.get(game.current_player)
+    if not current_player_obj or not current_player_obj.ai_type:
+        return
+    
+    ai_type = current_player_obj.ai_type
+    
+    if game.phase == GamePhase.BIDDING:
         # AI叫地主
-        ai_player = AIPlayerFactory.create_ai("simple", game.current_player)
+        ai_player = AIPlayerFactory.create_ai(ai_type, game.current_player)
         multiplier = ai_player.decide_bid(game, game.current_player)
         
         await asyncio.sleep(1)  # 模拟思考时间
         
         game.bid(game.current_player, multiplier)
         await _broadcast_game_state(room_id, game)
+        
+        # 如果仍是AI的回合（如下一个玩家也是AI），继续触发
+        if game.current_player and game.current_player.startswith("ai_"):
+            await _handle_ai_turn(game, room_id)
     
-    elif game.phase.value == "出牌" and game.current_player.startswith("ai_"):
+    elif game.phase == GamePhase.PLAYING:
         # AI出牌
-        ai_player = AIPlayerFactory.create_ai("simple", game.current_player)
+        ai_player = AIPlayerFactory.create_ai(ai_type, game.current_player)
         
         await asyncio.sleep(1)  # 模拟思考时间
         
@@ -421,6 +474,10 @@ async def _handle_ai_turn(game: GameState, room_id: str):
                 game.pass_turn(game.current_player)
         
         await _broadcast_game_state(room_id, game)
+        
+        # 如果仍是AI的回合，继续触发
+        if game.current_player and game.current_player.startswith("ai_"):
+            await _handle_ai_turn(game, room_id)
 
 
 # 静态文件服务（如果存在）

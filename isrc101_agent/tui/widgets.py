@@ -399,18 +399,83 @@ class ChatInput(Input):
         self.value = ""
 
 
-class ConfirmInput(Input):
-    """Temporary input widget for tool confirmations (y/n/a)."""
+class ConfirmPanel(Static):
+    """Floating confirmation panel for tool permissions.
+
+    Similar to Claude Code's permission popup:
+    - Shows tool name + key detail
+    - Single keypress: y = accept, n = reject, a = always, Esc = cancel
+    - No Enter required — instant response
+    - Visually distinct with warning-colored border
+
+    Always present in compose() (hidden by default) to avoid
+    dynamic mount/unmount lifecycle bugs.
+    """
 
     class Answered(Message):
         def __init__(self, answer: str) -> None:
             super().__init__()
             self.answer = answer
 
-    def __init__(self, prompt_text: str = "", **kwargs):
-        super().__init__(placeholder="(y)es / (n)o / (a)lways", **kwargs)
-        self._prompt_text = prompt_text
+    can_focus = True
 
-    def action_submit(self) -> None:
-        self.post_message(self.Answered(self.value.strip()))
-        self.value = ""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._tool_name = ""
+        self._detail = ""
+
+    def show_confirm(self, tool_name: str, detail: str = "") -> None:
+        """Populate and show the confirmation panel."""
+        self._tool_name = tool_name
+        self._detail = detail
+        self.display = True
+        self.refresh()
+        self.focus()
+
+    def hide(self) -> None:
+        self.display = False
+
+    def render(self) -> Text:
+        t = Text()
+        t.append("  \u26a1 ", style="bold #E3B341")
+        t.append("Allow ", style="bold #E6EDF3")
+        t.append(self._tool_name, style="bold #7FA6D9")
+        if self._detail:
+            detail = self._detail
+            if len(detail) > 70:
+                detail = detail[:67] + "..."
+            t.append(f"  {detail}", style="#8B949E")
+        t.append("  ?", style="bold #E3B341")
+        t.append("\n")
+        t.append("  ", style="")
+        t.append(" y ", style="bold #0D1117 on #57DB9C")
+        t.append(" Accept  ", style="#57DB9C")
+        t.append(" n ", style="bold #0D1117 on #F85149")
+        t.append(" Reject  ", style="#F85149")
+        t.append(" a ", style="bold #0D1117 on #7FA6D9")
+        t.append(" Always  ", style="#7FA6D9")
+        t.append(" esc ", style="bold #6E7681")
+        t.append("Cancel", style="#6E7681")
+        return t
+
+    def on_key(self, event) -> None:
+        if event.key in ("y", "Y", "enter"):
+            event.prevent_default()
+            event.stop()
+            self.display = False
+            self.post_message(self.Answered("y"))
+        elif event.key in ("n", "N"):
+            event.prevent_default()
+            event.stop()
+            self.display = False
+            self.post_message(self.Answered("n"))
+        elif event.key in ("a", "A"):
+            event.prevent_default()
+            event.stop()
+            self.display = False
+            self.post_message(self.Answered("a"))
+        elif event.key == "escape":
+            event.prevent_default()
+            event.stop()
+            self.display = False
+            self.post_message(self.Answered("n"))

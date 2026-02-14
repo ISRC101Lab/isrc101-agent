@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 150">
+  <defs>
+    <linearGradient id="feltGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1a1a"/>
+      <stop offset="100%" style="stop-color:#0a0a0a"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- 牌桌背景 -->
+  <rect x="0" y="0" width="200" height="150" rx="10" fill="url(#feltGrad)"/>
+  
+  <!-- 边框 -->
+  <rect x="0" y="0" width="200" height="150" rx="10" fill="none" stroke="#333" stroke-width="2"/>
+  
+  <!-- 卡牌占位符效果 -->
+  <g opacity="0.1">
+    <!-- 左边卡牌 -->
+    <rect x="20" y="50" width="30" height="45" rx="3" fill="none" stroke="#666" stroke-width="1"/>
+    <text x="35" y="78" font-family="Arial" font-size="10" fill="#666" text-anchor="middle">A</text>
+    
+    <!-- 中间卡牌 -->
+    <rect x="85" y="50" width="30" height="45" rx="3" fill="none" stroke="#666" stroke-width="1"/>
+    <text x="100" y="78" font-family="Arial" font-size="10" fill="#666" text-anchor="middle">K</text>
+    
+    <!-- 右边卡牌 -->
+    <rect x="150" y="50" width="30" height="45" rx="3" fill="none" stroke="#666" stroke-width="1"/>
+    <text x="165" y="78" font-family="Arial" font-size="10" fill="#666" text-anchor="middle">Q</text>
+  </g>
+  
+  <!-- 中心装饰 -->
+  <g opacity="0.05">
+    <circle cx="100" cy="75" r="40" fill="none" stroke="#d4af37" stroke-width="1"/>
+    <circle cx="100" cy="75" r="30" fill="none" stroke="#d4af37" stroke-width="1"/>
+  </g>
+</svg>

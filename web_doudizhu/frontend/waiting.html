@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>等待玩家加入...</title>
+    <link rel="icon" href="/static/images/logo.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-dark: #0a0a0a;
+            --bg-dark-secondary: #141414;
+            --bg-card: #1a1a1a;
+            --border-dark: #333333;
+            --border-light: #444444;
+            --accent-gold: #d4af37;
+            --accent-gold-light: #f0d060;
+            --accent-gold-glow: rgba(212, 175, 55, 0.4);
+            --text-primary: #ffffff;
+            --text-secondary: #b0b0b0;
+            --text-muted: #666666;
+        }
+
+        body {
+            font-family: 'Microsoft YaHei', 'PingFang SC', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #050505;
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* 背景 */
+        .bg-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: 
+                radial-gradient(ellipse at 50% 30%, rgba(212, 175, 55, 0.05) 0%, transparent 60%),
+                linear-gradient(180deg, #0a0a0a 0%, #050505 100%);
+            z-index: -1;
+        }
+
+        /* 等待容器 */
+        .waiting-container {
+            text-align: center;
+            padding: 40px;
+        }
+
+        /* 标题 */
+        h1 {
+            font-size: 32px;
+            color: var(--accent-gold);
+            margin-bottom: 10px;
+            letter-spacing: 2px;
+        }
+
+        .subtitle {
+            color: var(--text-muted);
+            margin-bottom: 40px;
+            font-size: 14px;
+        }
+
+        /* 房间信息 */
+        .room-info {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 15px;
+            margin-bottom: 40px;
+            padding: 20px 40px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-dark);
+            border-radius: 15px;
+        }
+
+        .room-label {
+            color: var(--text-muted);
+            font-size: 14px;
+        }
+
+        .room-code {
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--accent-gold);
+            letter-spacing: 4px;
+            font-family: monospace;
+        }
+
+        .copy-btn {
+            padding: 8px 16px;
+            background: var(--bg-dark-secondary);
+            border: 1px solid var(--border-light);
+            border-radius: 8px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+
+        .copy-btn:hover {
+            background: #2a2a2a;
+            color: var(--accent-gold);
+            border-color: var(--accent-gold);
+        }
+
+        /* 玩家槽位 */
+        .player-slots {
+            display: flex;
+            gap: 30px;
+            justify-content: center;
+            margin-bottom: 40px;
+        }
+
+        .player-slot {
+            width: 150px;
+            padding: 25px;
+            background: var(--bg-card);
+            border: 2px dashed var(--border-dark);
+            border-radius: 15px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 15px;
+            transition: all 0.3s ease;
+        }
+
+        .player-slot.filled {
+            border: 2px solid var(--accent-gold);
+            box-shadow: 0 0 20px var(--accent-gold-glow);
+        }
+
+        .player-slot.waiting {
+            opacity: 0.5;
+        }
+
+        .slot-icon {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background: var(--bg-dark-secondary);
+            border: 2px solid var(--border-light);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            color: var(--text-muted);
+        }
+
+        .player-slot.filled .slot-icon {
+            border-color: var(--accent-gold);
+            color: var(--accent-gold);
+        }
+
+        .slot-name {
+            font-size: 16px;
+            color: var(--text-secondary);
+        }
+
+        .player-slot.filled .slot-name {
+            color: var(--text-primary);
+        }
+
+        /* 加载动画 */
+        .loading-dots {
+            display: flex;
+            gap: 8px;
+            justify-content: center;
+        }
+
+        .loading-dots span {
+            width: 10px;
+            height: 10px;
+            background: var(--accent-gold);
+            border-radius: 50%;
+            animation: bounce 1.4s infinite ease-in-out both;
+        }
+
+        .loading-dots span:nth-child(1) { animation-delay: -0.32s; }
+        .loading-dots span:nth-child(2) { animation-delay: -0.16s; }
+
+        @keyframes bounce {
+            0%, 80%, 100% { transform: scale(0); }
+            40% { transform: scale(1); }
+        }
+
+        /* 底部提示 */
+        .tip {
+            color: var(--text-muted);
+            font-size: 13px;
+            margin-top: 30px;
+        }
+    </style>
+</head>
+<body>
+    <div class="bg-overlay"></div>
+
+    <div class="waiting-container">
+        <h1>等待玩家加入</h1>
+        <p class="subtitle">房间已创建，请分享房间号给朋友</p>
+
+        <div class="room-info">
+            <span class="room-label">房间号</span>
+            <span class="room-code" id="room-code">------</span>
+            <button class="copy-btn" onclick="copyRoomCode()">
+                <i class="fas fa-copy"></i> 复制
+            </button>
+        </div>
+
+        <div class="player-slots">
+            <div class="player-slot filled" id="slot-0">
+                <div class="slot-icon"><i class="fas fa-user"></i></div>
+                <span class="slot-name" id="name-0">房主</span>
+            </div>
+            <div class="player-slot waiting" id="slot-1">
+                <div class="loading-dots"><span></span><span></span><span></span></div>
+                <span class="slot-name">等待加入...</span>
+            </div>
+            <div class="player-slot waiting" id="slot-2">
+                <div class="loading-dots"><span></span><span></span><span></span></div>
+                <span class="slot-name">等待加入...</span>
+            </div>
+        </div>
+
+        <p class="tip">至少需要 3 名玩家才能开始游戏</p>
+    </div>
+
+    <script>
+        // 获取房间号
+        const urlParams = new URLSearchParams(window.location.search);
+        const roomCode = urlParams.get('room') || '------';
+        document.getElementById('room-code').textContent = roomCode;
+
+        // 复制房间号
+        function copyRoomCode() {
+            navigator.clipboard.writeText(roomCode).then(() => {
+                alert('房间号已复制到剪贴板！');
+            });
+        }
+
+        // 模拟更新玩家列表（实际应该通过WebSocket）
+        // 这里暂时留空，等待后续实现
+    </script>
+</body>
+</html>

@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80">
+  <defs>
+    <linearGradient id="wheatGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#f0d060"/>
+      <stop offset="50%" style="stop-color:#d4af37"/>
+      <stop offset="100%" style="stop-color:#aa8c2c"/>
+    </linearGradient>
+    <filter id="blueGlow">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- 光晕背景 -->
+  <circle cx="40" cy="40" r="35" fill="none" stroke="#1a3a5c" stroke-width="2" opacity="0.5"/>
+  
+  <!-- 麦穗 -->
+  <g filter="url(#blueGlow)">
+    <!-- 中间麦穗 -->
+    <ellipse cx="40" cy="35" rx="4" ry="12" fill="url(#wheatGrad)"/>
+    <path d="M36 28 Q32 20 36 15 M40 23 Q40 15 40 10 M44 28 Q48 20 44 15" 
+          stroke="url(#wheatGrad)" stroke-width="2" fill="none" stroke-linecap="round"/>
+    
+    <!-- 左侧麦穗 -->
+    <ellipse cx="30" cy="38" rx="3" ry="10" fill="url(#wheatGrad)" transform="rotate(-20 30 38)"/>
+    <path d="M27 32 Q24 26 27 22" stroke="url(#wheatGrad)" stroke-width="2" fill="none" stroke-linecap="round"/>
+    
+    <!-- 右侧麦穗 -->
+    <ellipse cx="50" cy="38" rx="3" ry="10" fill="url(#wheatGrad)" transform="rotate(20 50 38)"/>
+    <path d="M53 32 Q56 26 53 22" stroke="url(#wheatGrad)" stroke-width="2" fill="none" stroke-linecap="round"/>
+  </g>
+  
+  <!-- 茎 -->
+  <path d="M40 47 L40 60" stroke="url(#wheatGrad)" stroke-width="3" stroke-linecap="round"/>
+  <path d="M35 55 L40 60 L45 55" stroke="url(#wheatGrad)" stroke-width="2" fill="none" stroke-linecap="round"/>
+  
+  <!-- 叶子 -->
+  <path d="M40 52 Q30 48 28 55 Q35 55 40 52" fill="url(#wheatGrad)"/>
+  <path d="M40 52 Q50 48 52 55 Q45 55 40 52" fill="url(#wheatGrad)"/>
+</svg>

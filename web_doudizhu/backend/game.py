@@ -39,37 +39,42 @@ class GameState:
         self.bomb_count = 0
         self.last_pattern = None
         self.last_player = None
+        self.last_action = None  # 用于前端AI反馈: {type: 'bid'|'pass'|'play', multiplier: x, cards: [...]}
         self.history = []
         self.created_at = datetime.now()
         self.started_at = None
         self.finished_at = None
         self.winner = None
         
-    def add_player(self, player_id: str, player_name: str):
+    def add_player(self, player_id: str, player_name: str, ai_type: str = None):
         """添加玩家"""
         if len(self.players) >= 3:
             raise ValueError("房间已满")
         
-        player = Player(player_id, player_name)
+        player = Player(player_id, player_name, ai_type)
         self.players[player_id] = player
         
         if len(self.players) == 3:
             self.start_game()
     
-    def start_game(self):
-        """开始游戏"""
+    def start_game(self, skip_bidding: bool = False):
+        """开始游戏
+        skip_bidding: True则直接进入打牌阶段，跳过叫地主
+        """
         self.phase = GamePhase.DEALING
         self.started_at = datetime.now()
-        
+
         # 重置叫分状态
         self.bid_status = {}
         self.landlord = None
         self.base_multiplier = 1
-        
+        # 重开次数（防止无限循环）
+        self.restart_count = 0
+
         # 创建并洗牌
         self.deck = CardUtils.create_deck()
         random.shuffle(self.deck)
-        
+
         # 发牌
         player_ids = list(self.players.keys())
         for i, player_id in enumerate(player_ids):
@@ -81,13 +86,27 @@ class GameState:
             self.players[player_id].role = PlayerRole.FARMER
             # 初始化叫分状态
             self.bid_status[player_id] = None
-        
+
         # 留底牌
         self.deck = self.deck[51:54]  # 最后3张牌
-        
+
         # 设置当前玩家为第一个玩家
         self.current_player = player_ids[0]
-        self.phase = GamePhase.BIDDING
+
+        if skip_bidding:
+            # 直接进入打牌阶段，跳过叫地主
+            # 随机指定一个地主
+            self.landlord = player_ids[random.randint(0, 2)]
+            self.players[self.landlord].role = PlayerRole.LANDLORD
+            # 地主拿底牌
+            self.players[self.landlord].cards.extend(self.deck)
+            self.players[self.landlord].cards = CardUtils.sort_cards(self.players[self.landlord].cards)
+            self.deck = []
+            # 进入打牌阶段
+            self.phase = GamePhase.PLAYING
+            self.current_player = self.landlord
+        else:
+            self.phase = GamePhase.BIDDING
     
     def bid(self, player_id: str, multiplier: int) -> bool:
         """叫地主/抢地主"""
@@ -98,6 +117,13 @@ class GameState:
             return False
         
         player_ids = list(self.players.keys())
+        
+        # 设置last_action用于前端AI反馈
+        self.last_action = {
+            'type': 'bid',
+            'multiplier': multiplier,
+            'player_id': player_id
+        }
         
         # 记录叫地主的玩家
         if multiplier > 0:
@@ -125,7 +151,17 @@ class GameState:
         if all_bid:
             # 所有玩家都表态了
             if self.landlord is None:
-                # 没人叫地主，重新发牌
+                # 没人叫地主，重新发牌（最多重开5次）
+                if self.restart_count >= 5:
+                    # 强制指定第一个玩家为地主
+                    self.landlord = list(self.players.keys())[0]
+                    self.players[self.landlord].role = PlayerRole.LANDLORD
+                    self.players[self.landlord].cards.extend(self.deck)
+                    self.players[self.landlord].cards = CardUtils.sort_cards(self.players[self.landlord].cards)
+                    self.deck = []
+                    self.phase = GamePhase.PLAYING
+                    self.current_player = self.landlord
+                    return True
                 self.start_game()
                 return True
             
@@ -171,6 +207,13 @@ class GameState:
         # 验证出牌规则
         if not self._validate_play(player_id, pattern):
             return False
+        
+        # 设置last_action用于前端AI反馈
+        self.last_action = {
+            'type': 'play',
+            'cards': [str(c) for c in cards_to_play],
+            'player_id': player_id
+        }
         
         # 记录炸弹
         if pattern.pattern_type in [CardPatternType.BOMB, CardPatternType.ROCKET]:
@@ -219,6 +262,12 @@ class GameState:
         # 不能首轮过牌（除非是有人先出了牌）
         if self.last_pattern is None and len(self.history) == 0:
             return False
+        
+        # 设置last_action用于前端AI反馈
+        self.last_action = {
+            'type': 'pass',
+            'player_id': player_id
+        }
         
         # 更新当前玩家
         player_ids = list(self.players.keys())
@@ -308,11 +357,15 @@ class GameState:
     
     def to_dict(self) -> Dict:
         """转换为字典（用于序列化）"""
-        # 获取地主牌（底牌）
+        # 获取地主牌（底牌）- 在叫地主阶段显示底牌
         landlord_cards = []
-        if self.landlord and self.landlord in self.players:
-            # 底牌在地主手里时显示
+        
+        if self.phase.value == "叫地主":
+            # 叫地主阶段，底牌还没分给地主
             landlord_cards = [str(c) for c in self.deck] if len(self.deck) == 3 else []
+        elif self.landlord and self.phase.value == "出牌":
+            # 出牌阶段，底牌已经在地主手里，这里返回空数组让前端不显示重复
+            landlord_cards = []
         
         return {
             'room_id': self.room_id,
@@ -329,6 +382,7 @@ class GameState:
                 'pattern_type': self.last_pattern.pattern_type.value if self.last_pattern else None
             } if self.last_pattern else None,
             'last_player': self.last_player,
+            'last_action': self.last_action,
             'winner': self.winner,
             'created_at': self.created_at.isoformat(),
             'started_at': self.started_at.isoformat() if self.started_at else None,
@@ -339,23 +393,26 @@ class GameState:
 class Player:
     """玩家类"""
     
-    def __init__(self, player_id: str, name: str):
+    def __init__(self, player_id: str, name: str, ai_type: str = None):
         self.id = player_id
         self.name = name
         self.cards = []
         self.role = PlayerRole.FARMER
         self.score = 0
         self.is_ready = False
+        self.ai_type = ai_type  # AI类型（如果为None则是人类玩家）
     
     def to_dict(self) -> Dict:
         """转换为字典（用于序列化）"""
         return {
             'id': self.id,
             'name': self.name,
+            'cards': [str(c) for c in self.cards],  # 添加手牌信息
             'card_count': len(self.cards),
             'role': self.role.value,
             'score': self.score,
-            'is_ready': self.is_ready
+            'is_ready': self.is_ready,
+            'ai_type': self.ai_type
         }
 
 
