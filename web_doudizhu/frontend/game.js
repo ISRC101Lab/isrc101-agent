@@ -315,29 +315,42 @@ class DouDizhuGame {
      */
     updateGameInfo(state) {
         // 更新房间信息
-        document.getElementById('room-id')?.textContent = `房间: #${this.roomId}`;
+        const roomIdElement = document.getElementById('room-id');
+        if (roomIdElement) roomIdElement.textContent = `房间: #${this.roomId}`;
         
         // 更新游戏阶段
-        document.getElementById('game-phase')?.textContent = this.getPhaseName(state.phase);
+        const gamePhaseElement = document.getElementById('game-phase');
+        if (gamePhaseElement) gamePhaseElement.textContent = this.getPhaseName(state.phase);
         
         // 更新当前玩家
-        document.getElementById('current-player')?.textContent = 
-            state.players[state.current_player]?.name || state.current_player;
+        const currentPlayerElement = document.getElementById('current-player');
+        if (currentPlayerElement) {
+            currentPlayerElement.textContent = 
+                state.players[state.current_player]?.name || state.current_player;
+        }
         
         // 更新地主
-        document.getElementById('landlord-player')?.textContent = 
-            state.players[state.landlord]?.name || state.landlord || '无';
+        const landlordPlayerElement = document.getElementById('landlord-player');
+        if (landlordPlayerElement) {
+            landlordPlayerElement.textContent = 
+                state.players[state.landlord]?.name || state.landlord || '无';
+        }
         
         // 更新回合数
-        document.getElementById('round-number')?.textContent = state.round || 1;
+        const roundNumberElement = document.getElementById('round-number');
+        if (roundNumberElement) roundNumberElement.textContent = state.round || 1;
         
         // 更新分数
-        document.getElementById('game-score')?.textContent = this.calculateScores(state.players);
+        const gameScoreElement = document.getElementById('game-score');
+        if (gameScoreElement) gameScoreElement.textContent = this.calculateScores(state.players);
         
         // 更新最后出牌
         if (state.last_pattern) {
-            document.getElementById('last-play')?.textContent = 
-                `${state.players[state.last_player]?.name || state.last_player}: ${state.last_pattern}`;
+            const lastPlayElement = document.getElementById('last-play');
+            if (lastPlayElement) {
+                lastPlayElement.textContent = 
+                    `${state.players[state.last_player]?.name || state.last_player}: ${state.last_pattern}`;
+            }
         }
     }
     
